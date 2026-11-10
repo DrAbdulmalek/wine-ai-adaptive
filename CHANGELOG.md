@@ -31,7 +31,14 @@
 - `docs/THREAT_MODEL.md`: نموذج تهديد طبقة التخزين (13 تهديدًا) بخريطة تهديد ← تحصين ← اختبار ← حالة، من مراجعة أمنية خارجية.
 - `docs/AGENT_POLICY.md`: سياسة عمل الوكلاء والمساهمين (المسموح/المحظور/قواعد ثابتة/شروط التوقف).
 - اختبار `test_rejects_symlinked_sidecar_files`: رفض الروابط الرمزية عند مسارات الملفات الجانبية `-wal/-shm/-journal` دون المساس بالهدف (إجمالي الحزمة 34 اختبارًا).
+- **استعادة مكونات المشروع الأصلي** من النسخة المحلية دون تعديلها: `evidence.py`، `command.py`، `diagnostics/log_parser.py`، `environment/inventory.py`، `gpu_compatibility/probe.py`، `providers/ollama/client.py`، `knowledge/bridge.py`، مع اختباراتها الأصلية (`test_knowledge_bridge.py`، `test_log_parser.py`، `test_gpu_probe.py`، `test_ollama_client.py`).
+- أداة سطرية للقراءة فقط `wine-ai status [--json]` (`src/wine_ai/cli.py`) تعرض حالة بيئة Wine وVulkan بأدلة مُصنّفة، مع نقطة دخول `[project.scripts]`.
+- `SECURITY.md`: سياسة أمن المشروع وحدوده التشغيلية وقناة الإبلاغ عن الثغرات.
+- `Makefile`: أهداف `test` (unittest قياسي دون pytest) و`test-pytest` و`compile` و`clean` و`install` و`editable`.
 
 ### Changed
 - `.gitignore` يستبعد ملفات SQLite الجانبية (`*.sqlite3-*`).
 - README يوثق الضمانات الأمنية الفعلية وقيودها بدقة بدل الادعاءات المطلقة.
+- **الحد الأدنى لـPython أصبح `>=3.11`** (مكونات المشروع الأصلي تستخدم `enum.StrEnum`)، وتحديث classifiers وإشارة CI؛ CI يختبر 3.11–3.13 ويضيف خطوة `compileall`.
+- **إصلاح تلف في مشغّلات CI**: `branches: ain]` ← `branches: [main]` في `push` و`pull_request`.
+- وصف الحزمة يعكس نطاقها الأوسع: نواة تشخيص محلية مُحصّنة لـWine على لينكس.

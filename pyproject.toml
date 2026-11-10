@@ -5,30 +5,31 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wine-ai-adaptive"
 version = "0.1.0"
-description = "Adaptive Wine diagnostic knowledge store with hardened SQLite backend"
+description = "Local-first hardened diagnostic knowledge core for Wine on Linux"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 authors = [
     { name = "DrAbdulmalek" }
 ]
 license = { text = "MIT" }
-keywords = ["wine", "diagnostics", "sqlite", "knowledge-store", "hardened"]
+keywords = ["wine", "diagnostics", "sqlite", "knowledge-store", "hardened", "local-first", "evidence", "linux"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+
+[project.scripts]
+wine-ai = "wine_ai.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

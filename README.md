@@ -1,10 +1,30 @@
 # wine-ai-adaptive
 
 [![CI](https://github.com/DrAbdulmalek/wine-ai-adaptive/actions/workflows/ci.yml/badge.svg)](https://github.com/DrAbdulmalek/wine-ai-adaptive/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 مكتبة Python لتخزين المعرفة التشخيصية الخاصة بتطبيقات Wine، مبنيّة فوق SQLite بتصميم مُحصّن يقبل البيانات المنظمة فقط ويمنع تخزين أي محتوى خام.
+
+> **النواة الكاملة للمشروع الأصلي:** إلى جانب `KnowledgeStore` المحصّنة تتضمن الحزمة مكونات المشروع المحلي الأصلية: `Evidence`، جرد البيئة، محلل سجلات Wine، فحص توافق كروت الرسوميات عبر Vulkan، مزوّد Ollama المحلي (قراءة جرد فقط، دون إرسال أي prompts)، وجسر `KnowledgeBridge` — كلها offline-first وبمكتبة Python القياسية فقط.
+
+## الحدود التشغيلية (Safety boundaries)
+
+- لا إصلاح تلقائي لـWine أو النظام، ولا مساس بـprefix أو السجل أو DLL.
+- لا صلاحيات root، ولا مكالمات مزوّد ذكاء اصطناعي بعيد افتراضيًا.
+- لا تخزين سجلات خام: حقول منظمة بقوائم مسموحة فقط، وقيود `CHECK` خط الدفاع الأخير.
+- فشل آمن (fail-closed) في المسارات الحساسة: روابط رمزية وملفات غير اعتيادية ومخططات غير متوافقة تُرفض.
+- لا كتابة إلى GitHub من كود التشغيل.
+
+## الأداة السطرية (CLI)
+
+```bash
+pip install -e .
+wine-ai status          # ملخص حالة بيئة Wine وVulkan بأدلة مُصنّفة
+wine-ai status --json   # نفس المخرجات بصيغة JSON منظمة
+```
+
+الأداة للقراءة فقط: لا تعدّل شيئًا، وتفشل بأمان إذا لم تُوجد الأدوات.
 
 ## المزايا الأساسية
 
@@ -32,13 +52,27 @@
 wine-ai-adaptive/
 ├── src/wine_ai/
 │   ├── __init__.py
-│   └── knowledge/
-│       ├── __init__.py
-│       └── store.py              # وحدة KnowledgeStore
+│   ├── cli.py                       # أداة wine-ai السطرية (قراءة فقط)
+│   ├── command.py                   # غلاف subprocess آمن للقراءة فقط
+│   ├── evidence.py                  # EvidenceStatus و Evidence
+│   ├── knowledge/
+│   │   ├── __init__.py
+│   │   ├── bridge.py                # جسر persist_findings
+│   │   └── store.py                 # وحدة KnowledgeStore المحصّنة
+│   ├── diagnostics/log_parser.py    # تصنيف أنماط سجلات Wine
+│   ├── environment/inventory.py     # جرد البيئة (قراءة فقط)
+│   ├── gpu_compatibility/probe.py   # فحص Vulkan/GPU
+│   ├── providers/ollama/client.py   # جرد Ollama المحلي فقط
+│   ├── reporting/                   # حزمة مؤطّرة (توسعة مستقبلية)
+│   └── security/                    # حزمة مؤطّرة (توسعة مستقبلية)
 ├── tests/unit/
 │   ├── test_knowledge_store.py       # اختبارات الوحدة
 │   ├── test_knowledge_hardening.py   # اختبارات التحصين
-│   └── test_knowledge_security.py    # اختبارات أمنية مستقلة (symlink، صلاحيات، مخطط)
+│   ├── test_knowledge_security.py    # اختبارات أمنية مستقلة (symlink، صلاحيات، مخطط)
+│   ├── test_knowledge_bridge.py      # اختبارات الجسر
+│   ├── test_log_parser.py            # اختبارات محلل السجلات
+│   ├── test_gpu_probe.py             # اختبارات فحص GPU
+│   └── test_ollama_client.py         # اختبارات عميل Ollama (مُحاكاة)
 ├── docs/
 │   ├── SECURITY_AUDIT.md             # تقرير تدقيق التحصين
 │   ├── THREAT_MODEL.md               # نموذج التهديد: تهديد ← تحصين ← اختبار
@@ -46,6 +80,8 @@ wine-ai-adaptive/
 ├── examples/
 │   └── basic_usage.py
 ├── .github/workflows/ci.yml      # GitHub Actions CI
+├── SECURITY.md                   # سياسة الأمن وحدود التشغيل
+├── Makefile                      # test / compile / clean
 ├── pyproject.toml
 └── README.md
 ```

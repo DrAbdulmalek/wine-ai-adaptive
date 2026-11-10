@@ -12,10 +12,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The package itself supports Python >= 3.8, but GitHub-hosted
-        # runners no longer provide EOL interpreters (3.8, 3.9), so CI
-        # exercises the actively supported versions instead.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # The original components (evidence.py) use enum.StrEnum,
+        # which requires Python 3.11+; CI exercises the supported
+        # versions accordingly.
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,6 +29,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+
+      - name: Byte-compile sources
+        run: python -m compileall -q src tests
 
       - name: Run test suite
         run: python -m pytest tests/ -v
