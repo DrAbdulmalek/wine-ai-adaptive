@@ -232,6 +232,33 @@ class KnowledgeSecurityTests(unittest.TestCase):
                     mode & 0o077, 0, f"sidecar {suffix} too open"
                 )
 
+    def test_rejects_symlinked_sidecar_files(self):
+        # A sidecar path (-wal/-shm/-journal) holding a symbolic link
+        # must be rejected instead of followed, and the symlink target
+        # must remain untouched.
+        self.store.add_record(**valid_record())
+
+        victim = self.base / "victim_sidecar.txt"
+        victim.write_text("innocent content")
+
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = Path(str(self.db_path) + suffix)
+            self.assertFalse(sidecar.exists())
+            os.symlink(victim, sidecar)
+
+            try:
+                with self.assertRaises(KnowledgeStoreError):
+                    KnowledgeStore(self.db_path)
+            finally:
+                self.assertTrue(sidecar.is_symlink())
+                os.unlink(sidecar)
+
+            self.assertEqual(victim.read_text(), "innocent content")
+
+        # After removing the symlinks the store must open normally.
+        reopened = KnowledgeStore(self.db_path)
+        self.assertEqual(len(reopened.list_records()), 1)
+
     def test_no_persistent_sidecars_after_writes(self):
         self.store.add_record(**valid_record())
 

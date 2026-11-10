@@ -28,6 +28,9 @@
 ### Added
 - 15 اختبارًا أمنيًا مستقلًا في `tests/unit/test_knowledge_security.py` (إجمالي الحزمة 33 اختبارًا).
 - `docs/SECURITY_AUDIT.md`: تقرير تدقيق التحصين بتصنيفات الأدلة (PROVEN/PARTIALLY_PROVEN/UNPROVEN/BLOCKED).
+- `docs/THREAT_MODEL.md`: نموذج تهديد طبقة التخزين (13 تهديدًا) بخريطة تهديد ← تحصين ← اختبار ← حالة، من مراجعة أمنية خارجية.
+- `docs/AGENT_POLICY.md`: سياسة عمل الوكلاء والمساهمين (المسموح/المحظور/قواعد ثابتة/شروط التوقف).
+- اختبار `test_rejects_symlinked_sidecar_files`: رفض الروابط الرمزية عند مسارات الملفات الجانبية `-wal/-shm/-journal` دون المساس بالهدف (إجمالي الحزمة 34 اختبارًا).
 
 ### Changed
 - `.gitignore` يستبعد ملفات SQLite الجانبية (`*.sqlite3-*`).

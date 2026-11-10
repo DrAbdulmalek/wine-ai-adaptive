@@ -40,7 +40,9 @@ wine-ai-adaptive/
 │   ├── test_knowledge_hardening.py   # اختبارات التحصين
 │   └── test_knowledge_security.py    # اختبارات أمنية مستقلة (symlink، صلاحيات، مخطط)
 ├── docs/
-│   └── SECURITY_AUDIT.md             # تقرير تدقيق التحصين
+│   ├── SECURITY_AUDIT.md             # تقرير تدقيق التحصين
+│   ├── THREAT_MODEL.md               # نموذج التهديد: تهديد ← تحصين ← اختبار
+│   └── AGENT_POLICY.md               # سياسة عمل الوكلاء والمساهمين
 ├── examples/
 │   └── basic_usage.py
 ├── .github/workflows/ci.yml      # GitHub Actions CI
