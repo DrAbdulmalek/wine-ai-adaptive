@@ -43,8 +43,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         (prefix / "system.reg").unlink()
         os.mkfifo(prefix / "system.reg")
         info, evidence = inspect_prefix(prefix, home=self.home)
-        self.assertIsNotNone(info)
-        self.assertIsNone(info["architecture"])
+        self.assertIsNone(info)
         self.assertTrue(any(
             item.status.value == "BLOCKED"
             and "regular file" in str(item.details)
@@ -163,7 +162,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         self.assertLessEqual(len(managed_calls), MAX_SCAN_SUBDIRS)
         self.assertTrue(any(
             item.status.value == "PARTIALLY_PROVEN"
-            and "stopped at MAX_SCAN_SUBDIRS" in item.summary
+            and "capped at MAX_SCAN_SUBDIRS" in item.summary
             for item in evidence
         ))
 
