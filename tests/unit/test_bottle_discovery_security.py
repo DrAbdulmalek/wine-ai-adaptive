@@ -497,16 +497,21 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         good = make_prefix(managed, "z-good")
         real_open_dir = discovery._open_dir_path
         real_fstat = os.fstat
-        failed_fds = set()
+        candidate_fds_to_fail = set()
+        failed_fd_numbers = []
 
         def track_candidate_descriptor(path):
             fd = real_open_dir(path)
             if Path(path) == broken:
-                failed_fds.add(fd)
+                candidate_fds_to_fail.add(fd)
             return fd
 
         def fail_candidate_fstat(fd):
-            if fd in failed_fds:
+            if fd in candidate_fds_to_fail:
+                # File descriptor numbers may be reused after the failed
+                # candidate is closed; consume the injection exactly once.
+                candidate_fds_to_fail.remove(fd)
+                failed_fd_numbers.append(fd)
                 raise OSError(errno.EIO, "injected os.fstat failure")
             return real_fstat(fd)
 
@@ -520,8 +525,8 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
 
         self.assertFalse(any(item["path"] == str(broken) for item in prefixes))
         self.assertTrue(any(item["path"] == str(good) for item in prefixes))
-        self.assertEqual(len(failed_fds), 1)
-        for fd in failed_fds:
+        self.assertEqual(len(failed_fd_numbers), 1)
+        for fd in failed_fd_numbers:
             with self.assertRaises(OSError) as raised:
                 real_fstat(fd)
             self.assertEqual(raised.exception.errno, errno.EBADF)
