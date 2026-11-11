@@ -18,6 +18,22 @@
 ## [Unreleased]
 
 ### Added
+- طبقة تشخيص أدوات CAT (`wine_ai.diagnostics.cat_tools`) وخيار
+  `wine-ai diagnose --profile trados|memoq`: توقيعات فشل موثقة
+  (mscoree/0x80131700/fusion/vcruntime/msvcr70) تُحوَّل إلى تلميحات دقيقة
+  (`dotnet_runtime_missing`، `assembly_load_failure`…) مع أوامر winetricks
+  مقترحة تُطبع بعلامة «غير منفَّذ» — لا ينفذها المشروع أبدًا. التلميحات
+  طبقة فرز لا تدخل مخزون المعرفة (قيد `error_category` في المخطط v3 لم
+  يُمدَّد عمدًا). المواد الخام للسجل لا تغادر الوحدة. 19 اختبارًا جديدًا.
+  المصدر: جلسة DeepSeek الخارجية (الدور 6) — التصريف في
+  `docs/reviews/EXTERNAL_REVIEWS.md` §8 والمعرفة في
+  `docs/CAT_TOOLS_DIAGNOSTICS.md`.
+- خريطة HRESULT عائلة CLR في `diagnostics.codes`: بادئة شكل `0x8013`
+  معلومة، و`0x80131700` (فشل تهيئة .NET/CLR) مصنّف `startup` — ضمن
+  مفردات الفئات المقيدة القائمة.
+- وثيقة معرفة `docs/CAT_TOOLS_DIAGNOSTICS.md`: الواقع الموثق لتشغيل
+  Trados Studio وmemoQ على Wine (WineHQ 48152/13679/9433/56929)، جدول
+  الاعتماديات، سير العمل الواقعي، وتصنيف أدلة صادق لكل ادعاء.
 - مواصفة الجناح النظيف المستوحاة من CrossOver كوثيقة مرجعية معتمدة:
   `docs/CROSSOVER_CLEAN_ROOM_SPEC.md` (نسخة مكيّفة على المستودع من مسودة
   خارجية بتوجيه المالك، مع خريطة وحدات المصدر إلى الواقع الفعلي وتصريف

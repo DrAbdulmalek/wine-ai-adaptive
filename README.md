@@ -26,6 +26,8 @@ wine-ai status                     # ملخص حالة بيئة Wine وVulkan ب
 wine-ai status --json              # نفس المخرجات بصيغة JSON منظمة
 wine-ai diagnose --log wine.log    # تشخيص سجل Wine محلي: رموز مصنفة بلا تخزين
 wine-ai diagnose --log wine.log --json
+wine-ai diagnose --log wine.log --profile trados   # تلميحات CAT + اقتراح winetricks (لا يُنفَّذ)
+wine-ai diagnose --log wine.log --profile memoq
 wine-ai prefixes                   # اكتشاف بادئات Wine محليًا — للقراءة فقط
 wine-ai prefixes --json
 ```
@@ -33,7 +35,10 @@ wine-ai prefixes --json
 الأداة للقراءة فقط: لا تعدّل شيئًا، ولا تخزّن شيئًا، وتفشل بأمان إذا لم تُوجد
 الأدوات. يقرأ `diagnose` ملف سجل محليًا (بحد أقصى 2 ميبيبايت) ويطبع رموز
 الأخطاء المصنّفة وفئاتها الإرشادية ومستوى الثقة فقط — لا يطبع نص السجل الخام
-ولا يحفظه أبدًا، ولا ينشئ قاعدة بيانات. و`prefixes` يكتشف البادئات من
+ولا يحفظه أبدًا، ولا ينشئ قاعدة بيانات. ومع `--profile trados|memoq` يثري
+النتائج بتوقيعات فشل أدوات CAT الموثقة (`docs/CAT_TOOLS_DIAGNOSTICS.md`)
+وأمر winetricks مقترح يُطبع بعلامة «غير منفَّذ» — لا ينفذه المشروع أبدًا.
+و`prefixes` يكتشف البادئات من
 `$WINEPREFIX` و`~/.wine` (تصنّف محمية دائمًا) والجذر المُدار
 `~/.local/share/wine-ai-adaptive/prefixes`، ويحدد المعمارية من ترويسة سجل
 Wine — بلا أي كتابة أو تنفيذ أو تخزين؛ عمليات الإدارة الكتابية

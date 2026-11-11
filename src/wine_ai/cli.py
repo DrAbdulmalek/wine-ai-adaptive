@@ -29,6 +29,12 @@ except (AttributeError, ValueError):  # pragma: no cover - non-POSIX
 from pathlib import Path
 
 from wine_ai.bottle_manager.discovery import discover_prefixes
+from wine_ai.diagnostics.cat_tools import (
+    CAT_PROFILE_NAMES,
+    get_profile,
+    refine_findings,
+    signature_hints,
+)
 from wine_ai.diagnostics.codes import extract_error_codes
 from wine_ai.diagnostics.log_parser import MAX_LOG_SIZE, inspect_log
 from wine_ai.environment.inventory import collect_environment
@@ -91,20 +97,32 @@ def _read_log_text(path: str) -> str:
     return log_path.read_text(encoding="utf-8", errors="replace")
 
 
-def diagnose_command(log_path: str, as_json: bool) -> int:
+def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -> int:
     """Triage a local Wine/Proton log: parse, classify, print.
 
     Strictly read-only: the log is never stored, no database is
     created, and the output contains only structured codes, heuristic
     categories and confidence levels — never raw log lines.
+
+    With ``profile`` set to a CAT tool name (``trados`` or ``memoq``)
+    the findings gain CAT-specific hints and *suggestion-only*
+    winetricks commands. Suggestions are printed for the user to run
+    manually; this tool never executes them (docs/AGENT_POLICY.md,
+    no auto-repair).
     """
     summary, evidence = inspect_log(log_path)
 
     findings = []
+    profile_hints = []
+    profile_analyzed = False
     if "read_error" not in summary:
         try:
             text = _read_log_text(log_path)
             findings = extract_error_codes(text)
+            if profile is not None:
+                findings = refine_findings(findings, profile)
+                profile_hints = signature_hints(text)
+                profile_analyzed = True
         except (OSError, ValueError) as exc:
             evidence = evidence + [
                 Evidence("diagnose_read", EvidenceStatus.BLOCKED,
@@ -119,6 +137,9 @@ def diagnose_command(log_path: str, as_json: bool) -> int:
             "log_summary": summary,
             "evidence": _evidence_to_dicts(evidence),
         }
+        if profile_analyzed:
+            payload["profile"] = profile
+            payload["profile_hints"] = profile_hints
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
@@ -129,12 +150,32 @@ def diagnose_command(log_path: str, as_json: bool) -> int:
         print("Structured error codes:")
         for item in findings:
             category = item["category"] or "unmapped"
-            print(
+            line = (
                 f"  - {item['kind']:<8} {item['code']:<16} "
                 f"category={category:<16} confidence={item['confidence']}"
             )
+            if profile is not None and item.get("cat_hint"):
+                line += f" cat_hint={item['cat_hint']}"
+            print(line)
     else:
         print("No structured error codes found.")
+
+    if profile is not None:
+        meta = get_profile(profile)
+        print(f"CAT profile: {meta['display_name']} — {meta['status']}")
+        if profile_hints:
+            print("CAT signature hints (heuristic, triage only):")
+            for hint in profile_hints:
+                print(
+                    f"  - {hint['hint']:<24} matches={hint['matches']} "
+                    f"confidence={hint['confidence']}"
+                )
+                print(f"      suggestion (NOT executed): {hint['winetricks_suggestion']}")
+        else:
+            print("CAT signature hints: none matched.")
+        print("WineHQ references:")
+        for bug in meta["winehq_bugs"]:
+            print(f"  - {bug}")
 
     pattern_hits = summary.get("matches", {})
     if pattern_hits:
@@ -235,6 +276,13 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Path to a local Wine/Proton log file (max 2 MiB).",
     )
+    diagnose_parser.add_argument(
+        "--profile",
+        choices=list(CAT_PROFILE_NAMES),
+        default=None,
+        help="CAT tool profile for refined hints and suggestion-only "
+             "winetricks commands (nothing is executed).",
+    )
     _add_json_flag(diagnose_parser, suppressed=True)
 
     prefixes_parser = subparsers.add_parser(
@@ -255,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         return diagnose_command(
             log_path=args.log,
             as_json=bool(args.json),
+            profile=getattr(args, "profile", None),
         )
 
     if command == "prefixes":

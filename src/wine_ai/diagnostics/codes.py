@@ -30,6 +30,7 @@ WIN32_RE = re.compile(r"\bERROR_[A-Z0-9_]{2,48}\b")
 # else is treated as noise and ignored. Compared lowercased.
 _ERROR_SHAPE_PREFIXES = (
     "0x8007",   # HRESULT_FROM_WIN32(...)
+    "0x8013",   # CLR/.NET Framework HRESULT family (initialization, loader)
     "0xc000",   # NTSTATUS severity 0xC...
     "0xc0000",
     "0xe06d",   # MSVC C++ exception
@@ -40,6 +41,7 @@ CATEGORY_BY_HRESULT = {
     "0x8007007E": "missing_module",   # ERROR_MOD_NOT_FOUND
     "0x8007007F": "missing_module",   # ERROR_PROC_NOT_FOUND
     "0x8007000E": "memory",           # ERROR_OUTOFMEMORY
+    "0x80131700": "startup",          # CLR/.NET Framework initialization failure
     "0xC0000005": "memory",           # STATUS_ACCESS_VIOLATION
     "0xC0000135": "missing_module",   # STATUS_DLL_NOT_FOUND
     "0xC0000139": "missing_module",   # STATUS_ENTRYPOINT_NOT_FOUND
