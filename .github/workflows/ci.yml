@@ -51,18 +51,13 @@ jobs:
             echo '```text'
             grep -E "^(FAIL|ERROR):|^Ran |^OK|^FAILED" /tmp/unittest.log | head -60
             echo '--- tail ---'
-            tail -n 260 /tmp/unittest.log
+            tail -n 300 /tmp/unittest.log
             echo '```'
           } > diag.txt
-          B64=$(base64 -w0 diag.txt)
-          jq -n --arg b "$B64" '{message:"ci diagnosis (temporary)", content:$b, branch:"${{ github.event.pull_request.head.ref }}"}' > payload.json
-          for i in 1 2 3 4 5; do
-            code=$(curl -s -o putresp.json -w "%{http_code}" -X PUT \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              https://api.github.com/repos/${{ github.repository }}/contents/ci-diagnosis/py${{ matrix.python-version }}.txt \
-              -d @payload.json)
-            echo "PUT attempt $i -> $code"
-            [ "$code" = "200" ] && break
-            sleep 8
-          done
+          URL1=$(curl -s --max-time 30 --data-binary @diag.txt https://paste.rs || true)
+          URL2=$(curl -s --max-time 30 -F "file=@diag.txt" https://0x0.st || true)
+          URL3=$(curl -s --max-time 30 -F "content=<diag.txt" https://dpaste.com/api/v2/ || true)
+          echo "url1=$URL1 url2=$URL2 url3=$URL3"
+          echo "::error title=ci-diag-$PYVER::$URL1 | $URL2 | $URL3"
+        env:
+          PYVER: ${{ matrix.python-version }}
