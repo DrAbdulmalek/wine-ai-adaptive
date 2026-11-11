@@ -1,18 +1,7 @@
 '''Strict, data-only application recipe loading and validation.
 
-A recipe is a JSON document describing how a known Windows application
-is prepared for a managed Wine bottle. Recipes are pure data:
-
-- no shell commands, URLs, or executable content are accepted;
-- winetricks verbs must come from the module allow-list;
-- every list element is individually validated;
-- a recipe can never declare itself PROVEN; the highest status a
-  recipe file may claim is PARTIALLY_PROVEN. Only recorded test
-  outcomes (via the knowledge bridge) may raise the evidence level.
-
-This module deliberately contains no execution logic. Turning a
-recipe into actions is the responsibility of a separately reviewed
-and separately approved execution engine.
+Recipes are data only. This module never initializes Wine, invokes
+winetricks, launches subprocesses, or executes recipe steps.
 '''
 
 import json
@@ -33,10 +22,9 @@ __all__ = [
 ]
 
 RECIPE_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9-]{0,63}$')
+ISO_DATE_PATTERN = re.compile(r'^\\d{4}-\\d{2}-\\d{2}$')
+RECIPE_ERROR_CODE_PREFIX = 'RECIPE_'
 
-# Allow-list of winetricks verbs this project is prepared to reason
-# about. Anything outside this list is rejected at load time; extending
-# the list is a deliberate, reviewable code change.
 KNOWN_WINETRICKS_VERBS = frozenset({
     'dotnet48',
     'dotnet45',
@@ -49,8 +37,6 @@ KNOWN_WINETRICKS_VERBS = frozenset({
     'winver',
 })
 
-# Recipe files describe intent, not results. PROVEN is reserved for
-# recorded outcomes.
 ALLOWED_RECIPE_STATUSES = frozenset({
     EvidenceStatus.UNPROVEN.value,
     EvidenceStatus.PARTIALLY_PROVEN.value,
@@ -60,10 +46,21 @@ ALLOWED_RECIPE_STATUSES = frozenset({
 MAX_LIST_ITEMS = 32
 MAX_ITEM_LENGTH = 128
 MAX_NOTE_LENGTH = 1024
+ALLOWED_CONFIDENCE = frozenset({'low', 'medium', 'high'})
 
 
 class RecipeError(Exception):
     '''Raised when a recipe is missing, malformed, or unsafe.'''
+
+
+def _reject_duplicate_keys(pairs):
+    '''Reject duplicate keys instead of silently accepting the last value.'''
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RecipeError(f'Duplicate JSON key: {key}')
+        result[key] = value
+    return result
 
 
 def _validated_string_list(data, key, *, max_items=MAX_LIST_ITEMS):
@@ -80,9 +77,7 @@ def _validated_string_list(data, key, *, max_items=MAX_LIST_ITEMS):
                 f'Recipe list items must be non-empty strings: {key}'
             )
         if len(item) > MAX_ITEM_LENGTH:
-            raise RecipeError(
-                f'Recipe list item is too long in {key}'
-            )
+            raise RecipeError(f'Recipe list item is too long in {key}')
     return list(value)
 
 
@@ -90,13 +85,16 @@ def _validated_date(data, key):
     if key not in data:
         return None
     value = data[key]
-    if not isinstance(value, str):
-        raise RecipeError(f'Recipe key must be an ISO date string: {key}')
+    # null means that no compatibility test has been performed.
+    if value is None:
+        return None
+    if not isinstance(value, str) or not ISO_DATE_PATTERN.fullmatch(value):
+        raise RecipeError(f'Recipe key must be an ISO date (YYYY-MM-DD): {key}')
     try:
         parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise RecipeError(
-            f'Recipe key must be an ISO date (YYYY-MM-DD): {key}'
+            f'Recipe key must be a real ISO date (YYYY-MM-DD): {key}'
         ) from exc
     if parsed > datetime.now().date():
         raise RecipeError(f'Recipe date is in the future: {key}')
@@ -106,10 +104,15 @@ def _validated_date(data, key):
 def load_recipe(path):
     recipe_path = Path(path).expanduser()
     try:
-        data = json.loads(recipe_path.read_text(encoding='utf-8'))
+        data = json.loads(
+            recipe_path.read_text(encoding='utf-8'),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
     except FileNotFoundError as exc:
         raise RecipeError(f'Recipe not found: {recipe_path}') from exc
-    except (OSError, ValueError) as exc:
+    except RecipeError:
+        raise
+    except (OSError, ValueError, UnicodeError) as exc:
         raise RecipeError(
             f'Recipe file is corrupted: {recipe_path}'
         ) from exc
@@ -117,15 +120,15 @@ def load_recipe(path):
     if not isinstance(data, dict):
         raise RecipeError('Recipe must be a JSON object')
 
-    required = ('name', 'app', 'wine_version_suggestion',
-                'dependencies', 'notes', 'compatibility_status')
+    required = (
+        'name', 'app', 'wine_version_suggestion',
+        'dependencies', 'notes', 'compatibility_status',
+    )
     missing = [key for key in required if key not in data]
     if missing:
         raise RecipeError(f'Recipe is missing required keys: {missing}')
 
-    allowed = set(required) | {
-        'winetricks_verbs', 'steps', 'last_tested',
-    }
+    allowed = set(required) | {'winetricks_verbs', 'steps', 'last_tested'}
     unsupported = set(data) - allowed
     if unsupported:
         raise RecipeError(
@@ -139,9 +142,7 @@ def load_recipe(path):
     for key in ('app', 'wine_version_suggestion'):
         value = data[key]
         if not isinstance(value, str) or not value.strip():
-            raise RecipeError(
-                f'Recipe key must be a non-empty string: {key}'
-            )
+            raise RecipeError(f'Recipe key must be a non-empty string: {key}')
         if len(value) > MAX_ITEM_LENGTH:
             raise RecipeError(f'Recipe key is too long: {key}')
 
@@ -152,7 +153,7 @@ def load_recipe(path):
         raise RecipeError('Recipe notes are too long')
 
     status = data['compatibility_status']
-    if status not in ALLOWED_RECIPE_STATUSES:
+    if not isinstance(status, str) or status not in ALLOWED_RECIPE_STATUSES:
         raise RecipeError(
             'Recipe compatibility_status must be one of '
             f'{sorted(ALLOWED_RECIPE_STATUSES)}; PROVEN can only be '
@@ -168,8 +169,8 @@ def load_recipe(path):
         unknown = sorted(set(verbs) - KNOWN_WINETRICKS_VERBS)
         if unknown:
             raise RecipeError(
-                'Recipe contains winetricks verbs outside the '
-                f'allow-list: {unknown}'
+                'Recipe contains winetricks verbs outside the allow-list: '
+                f'{unknown}'
             )
 
     steps = _validated_string_list(data, 'steps')
@@ -181,7 +182,8 @@ def load_recipe(path):
         recipe['winetricks_verbs'] = verbs
     if steps is not None:
         recipe['steps'] = steps
-    if last_tested is not None:
+    # Preserve an explicit null: it means "never tested".
+    if 'last_tested' in data:
         recipe['last_tested'] = last_tested
     return recipe
 
@@ -200,21 +202,33 @@ def list_recipes(directory):
 
 
 def recipe_finding(recipe, *, status, confidence='low'):
-    '''Convert a recipe outcome into a knowledge-bridge finding.
+    '''Build a structured finding for explicit persistence via the bridge.
 
-    The status must be a valid evidence status. Recipes themselves can
-    never be PROVEN, but a recorded test outcome may be, so PROVEN is
-    accepted here only when the caller explicitly asserts it. BLOCKED
-    is a refusal state, not a recordable outcome, and is rejected.
+    The recipe file cannot claim PROVEN. A caller may supply PROVEN here
+    only as an independently recorded test outcome. BLOCKED is a refusal
+    state and is not a persistable finding.
     '''
-    valid_statuses = {item.value for item in EvidenceStatus}
-    if status not in valid_statuses:
-        raise ValueError('Unsupported evidence status')
-    if status == EvidenceStatus.BLOCKED.value:
+    if not isinstance(recipe, dict):
+        raise ValueError('recipe must be a validated recipe dictionary')
+    name = recipe.get('name')
+    if not isinstance(name, str) or not RECIPE_NAME_PATTERN.fullmatch(name):
+        raise ValueError('Invalid recipe name')
+
+    try:
+        status_value = EvidenceStatus(status).value
+    except (TypeError, ValueError) as exc:
+        raise ValueError('Unsupported evidence status') from exc
+    if status_value == EvidenceStatus.BLOCKED.value:
         raise ValueError('BLOCKED is not a recordable recipe outcome')
+
+    if confidence not in ALLOWED_CONFIDENCE:
+        raise ValueError('Unsupported confidence')
+
+    # KnowledgeStore accepts UPPER_SNAKE_CASE identifiers, not kebab-case.
+    error_code = RECIPE_ERROR_CODE_PREFIX + name.replace('-', '_').upper()
     return {
         'category': 'unknown',
-        'status': status,
+        'status': status_value,
         'confidence': confidence,
-        'error_code': 'recipe_' + recipe['name'],
+        'error_code': error_code,
     }
