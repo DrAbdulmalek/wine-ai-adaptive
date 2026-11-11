@@ -145,6 +145,31 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         self.assertTrue(prefix.is_symlink())
         self.assertTrue(any(item.status.value == "BLOCKED" for item in evidence))
 
+    def test_directory_swap_to_different_directory_is_detected(self):
+        prefix = make_prefix(self.home)
+        saved = self.home / "prefix.saved"
+        real_open = os.open
+        swapped = False
+
+        def racing_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            if path == "prefix" and kwargs.get("dir_fd") is not None and not swapped:
+                prefix.rename(saved)
+                prefix.mkdir()
+                swapped = True
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(discovery.os, "open", side_effect=racing_open):
+            info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertTrue(swapped)
+        self.assertIsNone(info)
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "changed during open" in str(item.details)
+            for item in evidence
+        ))
+
     def test_scan_processes_no_more_than_the_configured_limit(self):
         managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
         managed.mkdir(parents=True)
