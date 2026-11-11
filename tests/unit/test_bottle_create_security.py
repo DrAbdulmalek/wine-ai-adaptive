@@ -1,6 +1,6 @@
 """Security tests for Create Bottle. Every filesystem fixture is temporary."""
 from __future__ import annotations
-import json, os, stat, tempfile, unittest
+import errno, json, os, stat, tempfile, unittest
 from pathlib import Path
 from unittest import mock
 from wine_ai.bottle_manager.create import AUDIT_DIR_PARTS,AUDIT_FILENAME,DIR_MODE,MANAGED_ROOT_PARTS,create_bottle
@@ -108,6 +108,28 @@ class CreateBottleSecurityTests(unittest.TestCase):
             info,evidence=self.call_create("denied")
         self.assertIsNone(info); self.assertEqual(evidence[0].status,EvidenceStatus.BLOCKED)
         self.assertFalse((managed_root(self.home)/"denied").exists())
+
+    def test_E03_resource_and_filesystem_errors_fail_closed(self):
+        codes=(errno.EACCES,errno.EPERM,errno.EIO,errno.ENOSPC,errno.EMFILE,errno.ENFILE)
+        real_mkdir=os.mkdir
+        for code in codes:
+            name=f"fault-{code}"
+            def injected_mkdir(candidate,mode=0o777,*,dir_fd=None):
+                if candidate==name: raise OSError(code,"injected filesystem failure")
+                return real_mkdir(candidate,mode,dir_fd=dir_fd)
+            with self.subTest(errno=code):
+                with mock.patch("wine_ai.bottle_manager.create.os.mkdir",side_effect=injected_mkdir):
+                    info,evidence=self.call_create(name)
+                self.assertIsNone(info)
+                self.assertEqual(evidence[0].status,EvidenceStatus.BLOCKED)
+                self.assertFalse((managed_root(self.home)/name).exists())
+
+    def test_rejects_preexisting_managed_root_with_permissive_mode(self):
+        app=app_root(self.home); app.mkdir(parents=True,mode=0o700); app.chmod(0o755)
+        info,evidence=self.call_create("unsafe-parent")
+        self.assertIsNone(info)
+        self.assertEqual(evidence[0].status,EvidenceStatus.BLOCKED)
+        self.assertFalse((app/"prefixes"/"unsafe-parent").exists())
 
     def test_F01_F02_audit_records_success_and_failure(self):
         info,_=self.call_create("logged"); self.assertIsNotNone(info)
