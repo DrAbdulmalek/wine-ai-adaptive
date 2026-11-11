@@ -210,7 +210,6 @@ class CreateBottleSecurityTests(unittest.TestCase):
         self.assertEqual(opened,closed, f"descriptor open/close count mismatch: {opened} != {closed}")
         Path(info["path"]).rmdir()
 
-if __name__=="__main__": unittest.main()
 
 
     def test_H01_concurrent_same_name_creates_at_most_one_bottle(self):
@@ -303,3 +302,6 @@ if __name__=="__main__": unittest.main()
                 target = root / name
                 if target.is_dir() and not target.is_symlink():
                     target.rmdir()
+
+if __name__ == "__main__":
+    unittest.main()
