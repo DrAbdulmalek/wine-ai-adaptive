@@ -46,7 +46,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         self.assertIsNone(info)
         self.assertTrue(any(
             item.status.value == "BLOCKED"
-            and "regular file" in str(item.details)
+            and "system.reg" in str(item.details)
             for item in evidence
         ))
 
