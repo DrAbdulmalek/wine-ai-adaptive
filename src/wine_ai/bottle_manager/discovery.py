@@ -82,7 +82,11 @@ def _open_dir_path(path: Path | str) -> int:
                         component,
                     ) from exc
                 raise
-            opened = os.fstat(next_fd)
+            try:
+                opened = os.fstat(next_fd)
+            except OSError:
+                os.close(next_fd)
+                raise
             if (
                 not stat.S_ISDIR(opened.st_mode)
                 or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
@@ -106,14 +110,20 @@ def _identity(fd: int) -> tuple[int, int]:
 
 
 def _directory_identity(path: Path) -> tuple[int, int] | None:
+    """Return the target directory identity for protection decisions only.
+
+    stat() intentionally follows a symlink here: the path is never traversed
+    through that result. It lets a real target selected by WINEPREFIX inherit
+    ~/.wine protection when ~/.wine itself is a symlink. Candidate inspection
+    still rejects symlink traversal through _open_dir_path().
+    """
     try:
-        fd = _open_dir_path(path)
+        info = os.stat(path, follow_symlinks=True)
     except OSError:
         return None
-    try:
-        return _identity(fd)
-    finally:
-        os.close(fd)
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    return info.st_dev, info.st_ino
 
 
 def _stat_at(directory_fd: int, name: str):
@@ -166,7 +176,10 @@ def _probe_nested_directory(
     directory_fd: int, parts: tuple[str, ...]
 ) -> tuple[bool, str | None]:
     """Probe a nested directory using only no-follow dirfd operations."""
-    current_fd = os.dup(directory_fd)
+    try:
+        current_fd = os.dup(directory_fd)
+    except OSError as exc:
+        return False, f"Could not duplicate prefix directory descriptor: {exc}"
     try:
         for component in parts:
             try:
@@ -187,7 +200,11 @@ def _probe_nested_directory(
                 )
             except OSError as exc:
                 return False, f"{type(exc).__name__}: {exc}"
-            opened = os.fstat(next_fd)
+            try:
+                opened = os.fstat(next_fd)
+            except OSError as exc:
+                os.close(next_fd)
+                return False, f"Could not verify opened directory: {exc}"
             if (
                 not stat.S_ISDIR(opened.st_mode)
                 or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
@@ -322,8 +339,13 @@ def _inspect_candidate(
                 source, {"path": str(absolute / MARKER_DIR / "windows" / "syswow64"),
                          "error": nested_error},
             ))
+            # An untrusted nested path is unknown, not evidence of absence.
+            syswow64_present = None
 
-        arch_conflict = architecture == "win32" and syswow64_present
+        arch_conflict = (
+            None if nested_error
+            else architecture == "win32" and syswow64_present
+        )
         if arch_conflict:
             evidence.append(Evidence(
                 "prefix_architecture", EvidenceStatus.CONTRADICTED,
