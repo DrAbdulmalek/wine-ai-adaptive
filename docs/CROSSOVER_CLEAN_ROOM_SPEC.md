@@ -415,7 +415,7 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 
 | التهديد القائم | المعالجة في طبقة الاكتشاف | الاختبار المثبت |
 |---|---|---|
-| symlink في أي مكوّن مسار | فتح متدرج بـ`dir_fd` و`O_NOFOLLOW`؛ رفض المسار عند ظهور رابط أو تبديل مكوّن | `test_symlink_in_parent_component_is_rejected`, `test_directory_swap_to_symlink_is_not_followed` |
+| symlink في أي مكوّن مسار | فتح متدرج بـ`dir_fd` و`O_NOFOLLOW`؛ رفض المسار عند ظهور رابط أو تبديل مكوّن | `test_symlink_in_parent_component_is_rejected`, `test_directory_swap_to_symlink_is_not_followed`, `test_directory_swap_to_different_directory_is_detected` |
 | FIFO أو نوع ملف غير عادي في Registry/drive_c | فحص النوع قبل الفتح، فتح Registry بـ`O_NONBLOCK`، ثم `fstat` | `test_fifo_system_reg_is_rejected_without_blocking`, `test_fifo_drive_c_is_rejected_as_wrong_marker_type`, `test_non_regular_registry_marker_is_rejected` |
 | رابط متداخل داخل drive_c/windows | اجتياز كل مجلد بمقبض dirfd ورفض symlink | `test_symlinked_nested_syswow64_is_not_trusted` |
 | تكرار مسار ~/.wine بمصدر مختلف | حماية حسب المسار المطبّع وهوية المجلد؛ dedup حسب device/inode | `test_wineprefix_equal_to_default_prefix_remains_protected`, `test_normalized_alias_of_default_prefix_remains_protected` |
@@ -454,7 +454,7 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 - FIFO وملفات Registry غير العادية لا تسبب تعليقًا ولا تُقبل كعلامات صالحة.
 - لا يُتبع symlink في أي مكوّن أب أو داخل `drive_c/windows`.
 - `~/.wine` تبقى محمية عند اكتشافها عبر `WINEPREFIX` أو alias مطبّع.
-- اختبار تبديل مكوّن مسار إلى symlink يفشل مغلقًا.
+- اختبارات تبديل مكوّن مسار إلى symlink أو إلى مجلد مختلف تفشل مغلقة عبر مقارنة device/inode.
 - فحص القراءة فقط لا يغير محتوى الملفات أو أنواعها أو أوضاعها أو أحجامها أو أوقات تعديلها.
 - أمر `wine-ai prefixes` يُخرج JSON صالحًا أو نصًا مقروءًا، ولا يخزن
   شيئًا ولا يفشل انهيارًا عند غياب كل البادئات.
