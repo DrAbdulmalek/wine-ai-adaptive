@@ -13,6 +13,7 @@ from wine_ai.recipes import (
     list_recipes,
     load_recipe,
     recipe_finding,
+    record_test_outcome,
 )
 
 
@@ -29,6 +30,21 @@ def base_recipe(**overrides):
     }
     recipe.update(overrides)
     return recipe
+
+
+def base_outcome(**overrides):
+    outcome = {
+        'status': 'PROVEN',
+        'confidence': 'high',
+        'app_version': '2024 SR2',
+        'wine_version': '9.0',
+        'environment': 'Manjaro',
+        'tests_performed': ['install', 'launch', 'open project'],
+        'evidence_reference': 'https://example.test/report-1',
+        'test_date': '2026-01-15',
+    }
+    outcome.update(overrides)
+    return outcome
 
 
 class RecipeLoaderTests(unittest.TestCase):
@@ -129,13 +145,111 @@ class RecipeLoaderTests(unittest.TestCase):
                 load_recipe(Path(directory) / 'missing.json')
 
 
-class RecipeEvidenceIntegrationTests(unittest.TestCase):
-    def test_recipe_finding_persists_through_knowledge_bridge(self):
-        recipe = {
+class RecipeFindingEvidenceTests(unittest.TestCase):
+    """recipe_finding can never mint PROVEN, whatever the caller passes."""
+
+    def setUp(self):
+        self.recipe = {
             'name': 'trados-studio',
             'compatibility_status': 'UNPROVEN',
         }
-        finding = recipe_finding(recipe, status='PROVEN', confidence='high')
+
+    def test_proven_is_rejected_unconditionally(self):
+        for confidence in ('low', 'medium', 'high'):
+            with self.subTest(confidence=confidence):
+                with self.assertRaises(ValueError):
+                    recipe_finding(
+                        self.recipe,
+                        status='PROVEN',
+                        confidence=confidence,
+                    )
+
+    def test_non_proven_statuses_are_allowed(self):
+        for status in ('UNPROVEN', 'PARTIALLY_PROVEN', 'CONTRADICTED'):
+            with self.subTest(status=status):
+                finding = recipe_finding(self.recipe, status=status)
+                self.assertEqual(finding['status'], status)
+                self.assertEqual(finding['error_code'], 'RECIPE_TRADOS_STUDIO')
+
+    def test_blocked_and_invalid_statuses_are_rejected(self):
+        for status in ('BLOCKED', 'NOT_A_STATUS', None, 42):
+            with self.subTest(status=status):
+                with self.assertRaises(ValueError):
+                    recipe_finding(self.recipe, status=status)
+
+    def test_invalid_confidence_and_names_are_rejected(self):
+        with self.assertRaises(ValueError):
+            recipe_finding(self.recipe, status='UNPROVEN', confidence='certain')
+        with self.assertRaises(ValueError):
+            recipe_finding(self.recipe, status='UNPROVEN', confidence=[])
+        with self.assertRaises(ValueError):
+            recipe_finding({'name': 'Bad_Name'}, status='UNPROVEN')
+        with self.assertRaises(ValueError):
+            recipe_finding({'name': 'a' * 57}, status='UNPROVEN')
+
+
+class RecordTestOutcomeTests(unittest.TestCase):
+    """Only the structured test-outcome path may emit PROVEN."""
+
+    def setUp(self):
+        self.recipe = {'name': 'memoq', 'compatibility_status': 'UNPROVEN'}
+
+    def test_complete_record_produces_proven(self):
+        finding = record_test_outcome(self.recipe, **base_outcome())
+        self.assertEqual(finding['status'], 'PROVEN')
+        self.assertEqual(finding['error_code'], 'RECIPE_MEMOQ')
+        self.assertEqual(finding['confidence'], 'high')
+
+    def test_missing_required_fields_are_rejected(self):
+        required = (
+            'app_version', 'wine_version', 'environment',
+            'tests_performed', 'evidence_reference', 'test_date',
+        )
+        for field in required:
+            with self.subTest(field=field):
+                outcome = base_outcome()
+                del outcome[field]
+                with self.assertRaises(TypeError):
+                    record_test_outcome(self.recipe, **outcome)
+
+    def test_empty_or_invalid_structured_fields_are_rejected(self):
+        cases = {
+            'app_version': '../evil',
+            'wine_version': '',
+            'environment': 'x' * 129,
+            'tests_performed': [],
+            'tests_performed': ['install', ''],
+            'evidence_reference': '',
+            'evidence_reference': 'x' * 257,
+            'test_date': '2099-01-01',
+            'test_date': '2026-02-30',
+        }
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                outcome = base_outcome(**{field: value})
+                with self.assertRaises(ValueError):
+                    record_test_outcome(self.recipe, **outcome)
+
+    def test_blocked_and_invalid_statuses_are_rejected(self):
+        for status in ('BLOCKED', 'NOT_A_STATUS'):
+            with self.subTest(status=status):
+                with self.assertRaises(ValueError):
+                    record_test_outcome(self.recipe, **base_outcome(status=status))
+
+    def test_lower_evidence_statuses_also_require_the_full_record(self):
+        finding = record_test_outcome(
+            self.recipe, **base_outcome(status='PARTIALLY_PROVEN')
+        )
+        self.assertEqual(finding['status'], 'PARTIALLY_PROVEN')
+
+
+class RecipeEvidenceIntegrationTests(unittest.TestCase):
+    def test_test_outcome_proven_persists_through_knowledge_bridge(self):
+        recipe = load_recipe_dict = {
+            'name': 'trados-studio',
+            'compatibility_status': 'UNPROVEN',
+        }
+        finding = record_test_outcome(recipe, **base_outcome())
         self.assertEqual(finding['error_code'], 'RECIPE_TRADOS_STUDIO')
 
         with tempfile.TemporaryDirectory() as directory:
@@ -153,20 +267,10 @@ class RecipeEvidenceIntegrationTests(unittest.TestCase):
             self.assertEqual(rows[0]['evidence_status'], 'PROVEN')
             self.assertEqual(rows[0]['confidence'], 'high')
 
-    def test_blocked_and_invalid_findings_are_rejected(self):
-        recipe = {'name': 'memoq'}
+    def test_recipe_layer_cannot_persist_proven_without_test_record(self):
+        recipe = {'name': 'trados-studio', 'compatibility_status': 'UNPROVEN'}
         with self.assertRaises(ValueError):
-            recipe_finding(recipe, status='BLOCKED')
-        with self.assertRaises(ValueError):
-            recipe_finding(recipe, status='NOT_A_STATUS')
-        with self.assertRaises(ValueError):
-            recipe_finding(recipe, status='PROVEN', confidence='certain')
-        with self.assertRaises(ValueError):
-            recipe_finding(recipe, status='PROVEN', confidence=[])
-        with self.assertRaises(ValueError):
-            recipe_finding({'name': 'Bad_Name'}, status='PROVEN')
-        with self.assertRaises(ValueError):
-            recipe_finding({'name': 'a' * 57}, status='PROVEN')
+            recipe_finding(recipe, status='PROVEN', confidence='high')
 
 
 if __name__ == '__main__':

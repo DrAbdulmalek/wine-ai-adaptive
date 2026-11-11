@@ -2,6 +2,15 @@
 
 Recipes are data only. This module never initializes Wine, invokes
 winetricks, launches subprocesses, or executes recipe steps.
+
+Evidence discipline: a recipe file cannot claim PROVEN, and neither can
+``recipe_finding``. The only path that may emit a PROVEN finding is
+``record_test_outcome``, which requires a complete, structured test
+record (application version, Wine version, environment, tests
+performed, evidence reference, and test date). The evidence reference
+itself cannot be stored in the current schema (v4 has no free-text
+column); callers must retain the referenced report and the store row
+serves as the structured outcome marker only.
 '''
 
 import json
@@ -10,6 +19,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from wine_ai.evidence import EvidenceStatus
+from wine_ai.knowledge.store import SAFE_LABEL
 
 __all__ = [
     'RecipeError',
@@ -19,6 +29,7 @@ __all__ = [
     'load_recipe',
     'list_recipes',
     'recipe_finding',
+    'record_test_outcome',
 ]
 
 # Keep the generated RECIPE_<NAME> identifier within KnowledgeStore's
@@ -48,6 +59,7 @@ ALLOWED_RECIPE_STATUSES = frozenset({
 MAX_LIST_ITEMS = 32
 MAX_ITEM_LENGTH = 128
 MAX_NOTE_LENGTH = 1024
+MAX_EVIDENCE_REFERENCE_LENGTH = 256
 ALLOWED_CONFIDENCE = frozenset({'low', 'medium', 'high'})
 
 
@@ -159,7 +171,7 @@ def load_recipe(path):
         raise RecipeError(
             'Recipe compatibility_status must be one of '
             f'{sorted(ALLOWED_RECIPE_STATUSES)}; PROVEN can only be '
-            'reached through recorded test outcomes'
+            'reached through record_test_outcome'
         )
 
     dependencies = _validated_string_list(data, 'dependencies')
@@ -203,30 +215,133 @@ def list_recipes(directory):
     return found
 
 
-def recipe_finding(recipe, *, status, confidence='low'):
-    '''Build a structured finding for explicit persistence via the bridge.
-
-    The recipe file cannot claim PROVEN. A caller may supply PROVEN here
-    only as an independently recorded test outcome. BLOCKED is a refusal
-    state and is not a persistable finding.
-    '''
+def _validated_recipe_name(recipe):
     if not isinstance(recipe, dict):
         raise ValueError('recipe must be a validated recipe dictionary')
     name = recipe.get('name')
     if not isinstance(name, str) or not RECIPE_NAME_PATTERN.fullmatch(name):
         raise ValueError('Invalid recipe name')
+    return name
 
+
+def _validated_safe_label(value, field_name):
+    if not isinstance(value, str) or not SAFE_LABEL.fullmatch(value):
+        raise ValueError(f'Invalid {field_name}')
+    return value
+
+
+def _validated_evidence_status(status):
     try:
         status_value = EvidenceStatus(status).value
     except (TypeError, ValueError) as exc:
         raise ValueError('Unsupported evidence status') from exc
     if status_value == EvidenceStatus.BLOCKED.value:
         raise ValueError('BLOCKED is not a recordable recipe outcome')
+    return status_value
 
+
+def recipe_finding(recipe, *, status, confidence='low'):
+    '''Build a structured finding for explicit persistence via the bridge.
+
+    PROVEN is rejected here unconditionally: a recipe layer function
+    cannot mint a compatibility claim, no matter what the caller
+    passes. PROVEN may only be produced by ``record_test_outcome``
+    with a complete structured test record. BLOCKED is a refusal state
+    and is not a persistable finding.
+    '''
+    name = _validated_recipe_name(recipe)
+    status_value = _validated_evidence_status(status)
+    if status_value == EvidenceStatus.PROVEN.value:
+        raise ValueError(
+            'recipe_finding cannot emit PROVEN; use record_test_outcome '
+            'with a complete structured test record'
+        )
     if not isinstance(confidence, str) or confidence not in ALLOWED_CONFIDENCE:
         raise ValueError('Unsupported confidence')
 
     # KnowledgeStore accepts UPPER_SNAKE_CASE identifiers, not kebab-case.
+    error_code = RECIPE_ERROR_CODE_PREFIX + name.replace('-', '_').upper()
+    return {
+        'category': 'unknown',
+        'status': status_value,
+        'confidence': confidence,
+        'error_code': error_code,
+    }
+
+
+def record_test_outcome(
+    recipe,
+    *,
+    status,
+    confidence='low',
+    app_version,
+    wine_version,
+    environment,
+    tests_performed,
+    evidence_reference,
+    test_date,
+):
+    '''Record a structured compatibility test outcome for a recipe.
+
+    This is the only path in the recipe layer that may emit a PROVEN
+    finding, and it requires a complete, independently reviewable test
+    record:
+
+    - ``app_version``: tested application version (SAFE_LABEL).
+    - ``wine_version``: tested Wine version (SAFE_LABEL); it is also
+      the value persisted into the store row.
+    - ``environment``: distribution/environment label (SAFE_LABEL).
+    - ``tests_performed``: non-empty list of what was actually tested.
+    - ``evidence_reference``: pointer to the retained test report
+      (CI run URL, document, or hash). The current schema has no
+      free-text column, so the referenced report must be retained by
+      the caller; this parameter enforces that one exists.
+    - ``test_date``: ISO date, not in the future.
+
+    The finding itself stays structured; raw text is never persisted.
+    '''
+    name = _validated_recipe_name(recipe)
+    status_value = _validated_evidence_status(status)
+    if not isinstance(confidence, str) or confidence not in ALLOWED_CONFIDENCE:
+        raise ValueError('Unsupported confidence')
+
+    _validated_safe_label(app_version, 'app_version')
+    _validated_safe_label(wine_version, 'wine_version')
+    _validated_safe_label(environment, 'environment')
+
+    if not isinstance(tests_performed, list) or not tests_performed:
+        raise ValueError('tests_performed must be a non-empty list')
+    if len(tests_performed) > MAX_LIST_ITEMS:
+        raise ValueError('tests_performed list is too long')
+    for item in tests_performed:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                'tests_performed items must be non-empty strings'
+            )
+        if len(item) > MAX_ITEM_LENGTH:
+            raise ValueError('tests_performed item is too long')
+
+    if (
+        not isinstance(evidence_reference, str)
+        or not evidence_reference.strip()
+        or len(evidence_reference) > MAX_EVIDENCE_REFERENCE_LENGTH
+    ):
+        raise ValueError(
+            'evidence_reference must be a non-empty string '
+            f'(max {MAX_EVIDENCE_REFERENCE_LENGTH} chars)'
+        )
+
+    if not isinstance(test_date, str) or not ISO_DATE_PATTERN.fullmatch(test_date):
+        raise ValueError('test_date must be an ISO date (YYYY-MM-DD)')
+    try:
+        parsed = date.fromisoformat(test_date)
+    except ValueError as exc:
+        raise ValueError(
+            'test_date must be a real ISO date (YYYY-MM-DD)'
+        ) from exc
+    if parsed > datetime.now().date():
+        raise ValueError('test_date is in the future')
+
     error_code = RECIPE_ERROR_CODE_PREFIX + name.replace('-', '_').upper()
     return {
         'category': 'unknown',

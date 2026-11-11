@@ -8,6 +8,7 @@ from wine_ai.recipes.loader import (
     list_recipes,
     load_recipe,
     recipe_finding,
+    record_test_outcome,
 )
 
 RECIPES_DIR = Path(__file__).resolve().parent
@@ -19,4 +20,5 @@ __all__ = [
     'list_recipes',
     'load_recipe',
     'recipe_finding',
+    'record_test_outcome',
 ]
