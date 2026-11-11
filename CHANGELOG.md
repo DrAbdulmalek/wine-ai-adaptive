@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 و[Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Documentation
+- `docs/reviews/ORCHESTRATOR_SESSIONS_LOG.md`: سجل طبقة التنسيق — الجلسات الخمس
+  التي عالجت روابط المشاركة الخارجية (ChatGPT/DeepSeek) وأدارت التكامل، مع مطابقة
+  المناطق الزمنية وجدول تحقق مستقل من الالتزامات وتشغيلات CI المذكورة.
+
 ## [1.0.0] - 2026-11-12
 
 > الإصدار الأول الرسمي: دمج المشروع المتكامل (PR #14) — جميع مسارات
