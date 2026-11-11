@@ -131,6 +131,11 @@ def _verify_created_directory(fd: int) -> os.stat_result:
         raise BottleCreateError("Created directory failed type, ownership, or mode verification")
     return info
 
+def _verify_target_entry(parent_fd: int, name: str, identity: tuple[int,int]) -> None:
+    current=os.stat(name,dir_fd=parent_fd,follow_symlinks=False)
+    if not stat.S_ISDIR(current.st_mode) or (current.st_dev,current.st_ino)!=identity:
+        raise BottleCreateError("Target directory entry no longer matches the created identity")
+
 def _cleanup_created_directory(parent_fd: int,name: str,created_fd: int,identity: tuple[int,int]) -> bool:
     try:
         opened=os.fstat(created_fd); current=os.stat(name,dir_fd=parent_fd,follow_symlinks=False)
@@ -176,6 +181,7 @@ def create_bottle(name: str, *, home: Path|None=None) -> tuple[dict|None,list[Ev
             os.fchmod(target_fd,DIR_MODE)
             info=_verify_created_directory(target_fd)
             if (info.st_dev,info.st_ino)!=identity: raise BottleCreateError("Created identity changed")
+            _verify_target_entry(root_fd,valid,identity)
         except (OSError,BottleCreateError) as exc:
             if target_fd is not None and identity is not None:
                 _cleanup_created_directory(root_fd,valid,target_fd,identity)
