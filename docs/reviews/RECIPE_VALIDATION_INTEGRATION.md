@@ -18,10 +18,9 @@ is preserved unchanged.
   `UPPER_SNAKE_CASE` error-code format and bound recipe names so the
   generated identifier fits the store's 64-character limit.
 - `recipe_finding()` rejects `PROVEN` unconditionally.
-- `record_test_outcome()` validates structured observation metadata but
-  also rejects `PROVEN`: metadata and a caller-supplied reference do not
-  establish report existence, authenticity, or correspondence to the
-  claimed test.
+- The unverified `record_test_outcome()` API has been removed rather
+  than retaining a misleading metadata-only path. No recipe API emits
+  `PROVEN` until a trusted verifier and durable evidence binding exist.
 - The generic `persist_findings()` bridge rejects `PROVEN` records.
   The low-level KnowledgeStore remains a caller-trusted storage API and
   is not an evidence-verification authority.
