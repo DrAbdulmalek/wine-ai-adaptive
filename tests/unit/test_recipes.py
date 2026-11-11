@@ -162,7 +162,11 @@ class RecipeEvidenceIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             recipe_finding(recipe, status='PROVEN', confidence='certain')
         with self.assertRaises(ValueError):
+            recipe_finding(recipe, status='PROVEN', confidence=[])
+        with self.assertRaises(ValueError):
             recipe_finding({'name': 'Bad_Name'}, status='PROVEN')
+        with self.assertRaises(ValueError):
+            recipe_finding({'name': 'a' * 57}, status='PROVEN')
 
 
 if __name__ == '__main__':
