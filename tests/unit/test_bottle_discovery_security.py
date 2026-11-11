@@ -623,6 +623,27 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             for item in evidence
         ))
 
+    def test_protected_identity_never_downgrades_across_all_origins(self):
+        target = make_prefix(self.home, "real-default")
+        (self.home / ".wine").symlink_to(target, target_is_directory=True)
+        os.environ["WINEPREFIX"] = str(target)
+
+        prefixes, evidence = discover_prefixes(
+            home=self.home,
+            candidates=[target, target / "."],
+            container_roots=[self.home],
+        )
+
+        matches = [item for item in prefixes if item["path"] == str(target)]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0]["protected"])
+        self.assertEqual(matches[0]["origin"], "WINEPREFIX")
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "Symlinked prefix candidate" in item.summary
+            for item in evidence
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
