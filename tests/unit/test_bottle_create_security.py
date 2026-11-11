@@ -130,6 +130,16 @@ class CreateBottleSecurityTests(unittest.TestCase):
         self.assertEqual(evidence[0].status,EvidenceStatus.BLOCKED)
         self.assertFalse(managed_root(self.home).exists()); self.assertEqual(outside.read_text(),"")
 
+    def test_audit_hardlink_is_rejected_before_bottle_creation(self):
+        app=app_root(self.home); app.mkdir(parents=True,mode=0o700); app.chmod(0o700)
+        logs=app/"logs"; logs.mkdir(mode=0o700)
+        outside=self.home/"outside-log"; outside.write_text("keep")
+        os.link(outside,logs/AUDIT_FILENAME)
+        info,evidence=self.call_create("no-hardlink"); self.assertIsNone(info)
+        self.assertEqual(evidence[0].status,EvidenceStatus.BLOCKED)
+        self.assertFalse(managed_root(self.home).exists())
+        self.assertEqual(outside.read_text(),"keep")
+
     def test_G01_no_external_process_or_wine_execution(self):
         with mock.patch("subprocess.Popen") as popen,mock.patch("os.system") as system:
             info,_=self.call_create("no-wine")
