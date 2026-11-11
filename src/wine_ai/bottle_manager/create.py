@@ -1,6 +1,6 @@
 """Fail-closed creation of empty, uninitialized managed Wine bottle directories."""
 from __future__ import annotations
-import errno, json, os, re, stat, time, uuid
+import errno, fcntl, json, os, re, stat, time, uuid
 from pathlib import Path
 from typing import Any
 from wine_ai.evidence import Evidence, EvidenceStatus
@@ -111,9 +111,27 @@ def _append_audit(fd: int, *, operation_id: str, name: str|None, outcome: str, r
         "timestamp_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),
         "operation_id":operation_id,"operation":"create_bottle","name":name,
         "relative_path":f"prefixes/{name}" if name else None,"outcome":outcome,"reason":reason}
-    data=(json.dumps(record,ensure_ascii=True,separators=(",",":"))+"\n").encode()
-    if os.write(fd,data)!=len(data): raise OSError(errno.EIO,"short audit-log write")
-    os.fsync(fd)
+    data=(json.dumps(record,ensure_ascii=True,separators=(",",":"))+"\\n").encode()
+    # Serialize cooperating writers and roll back a partial record on failure.
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    start_size = os.fstat(fd).st_size
+    try:
+        remaining = memoryview(data)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError(errno.EIO, "audit-log write made no progress")
+            remaining = remaining[written:]
+        os.fsync(fd)
+    except OSError:
+        try:
+            os.ftruncate(fd, start_size)
+            os.fsync(fd)
+        except OSError as rollback_error:
+            raise OSError(errno.EIO, "audit append failed and partial-record rollback failed") from rollback_error
+        raise
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 def _validate_name(name: object) -> bool:
     return isinstance(name,str) and NAME_PATTERN.fullmatch(name) is not None
