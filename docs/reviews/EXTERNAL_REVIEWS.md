@@ -274,4 +274,6 @@ Unreleased/Added في CHANGELOG (صياغته بالعربية توحيدًا م
 
 ### الحالة
 
-**إضافة TOCTOU:** قورنت هوية المجلد (device/inode) قبل الفتح وبعده، وأضيف اختبار لاستبدال المجلد بمجلد آخر بين stat وopen. كما تُقارن هوية system.reg بعد الفتح.\n\n**PENDING CI AND INDEPENDENT REVIEW** — لا يُسمح بالانتقال إلى P2 قبل إغلاق جميع بنود P1-H01…P1-H07 بالأدلة.
+**إضافة TOCTOU:** قورنت هوية المجلد (device/inode) قبل الفتح وبعده، وأضيف اختبار لاستبدال المجلد بمجلد آخر بين stat وopen. كما تُقارن هوية system.reg بعد الفتح.
+
+**CI SUCCESS — INDEPENDENT REVIEW PENDING** — لا يُسمح بالانتقال إلى P2 قبل إغلاق جميع بنود P1-H01…P1-H07 بالأدلة.
