@@ -111,7 +111,7 @@ def _append_audit(fd: int, *, operation_id: str, name: str|None, outcome: str, r
         "timestamp_utc":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),
         "operation_id":operation_id,"operation":"create_bottle","name":name,
         "relative_path":f"prefixes/{name}" if name else None,"outcome":outcome,"reason":reason}
-    data=(json.dumps(record,ensure_ascii=True,separators=(",",":"))+"\\n").encode()
+    data=(json.dumps(record,ensure_ascii=True,separators=(",",":"))+"\n").encode()
     # Serialize cooperating writers and roll back a partial record on failure.
     fcntl.flock(fd, fcntl.LOCK_EX)
     start_size = os.fstat(fd).st_size
