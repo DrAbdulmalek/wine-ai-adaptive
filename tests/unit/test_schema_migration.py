@@ -1,4 +1,4 @@
-"""Tests for the schema v1 -> v2 migration and related guarantees.
+"""Tests for the schema migration chain (v1 -> v2 -> v3) and its guarantees.
 
 All databases are temporary; no user database is ever touched.
 """
@@ -11,9 +11,12 @@ import unittest
 from pathlib import Path
 
 from wine_ai.knowledge.store import (
+    EXPECTED_TABLE_SQL,
+    EXPECTED_TABLE_SQL_V2,
     KnowledgeStore,
     KnowledgeStoreError,
     SCHEMA_VERSION,
+    _normalize_sql,
 )
 
 
@@ -50,6 +53,9 @@ CREATE TABLE diagnostic_records (
 )
 """
 
+# Canonical version 2 definition (mirrors EXPECTED_TABLE_SQL_V2).
+V2_CREATE_SQL = EXPECTED_TABLE_SQL_V2
+
 
 class SchemaMigrationTests(unittest.TestCase):
 
@@ -59,6 +65,51 @@ class SchemaMigrationTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def make_v2_database(self, name="v2.sqlite3", rows=2, poison=None):
+        """Create a canonical version 2 database for migration tests.
+
+        ``poison`` inserts one extra row whose ``wine_version`` violates
+        the version 3 CHECK constraints — possible only through raw
+        SQLite writes, which is exactly the scenario the v3 migration
+        must fail closed on.
+        """
+        path = self.base / name
+        connection = sqlite3.connect(str(path))
+        try:
+            connection.execute(V2_CREATE_SQL)
+            for index in range(rows):
+                connection.execute(
+                    """
+                    INSERT INTO diagnostic_records (
+                        created_at, wine_version, distro,
+                        error_category, evidence_status,
+                        confidence, gpu_vendor
+                    )
+                    VALUES ('2026-01-01T00:00:00+00:00', '10.15',
+                            'Arch', 'graphics', 'PARTIALLY_PROVEN',
+                            'low', 'amd')
+                    """
+                )
+            if poison is not None:
+                connection.execute(
+                    """
+                    INSERT INTO diagnostic_records (
+                        created_at, wine_version, distro,
+                        error_category, evidence_status,
+                        confidence, gpu_vendor
+                    )
+                    VALUES ('2026-01-01T00:00:00+00:00', ?,
+                            'Arch', 'graphics', 'PARTIALLY_PROVEN',
+                            'low', 'amd')
+                    """,
+                    (poison,),
+                )
+            connection.execute("PRAGMA user_version = 2")
+            connection.commit()
+        finally:
+            connection.close()
+        return path
 
     def make_v1_database(self, name="v1.sqlite3", rows=2):
         path = self.base / name
@@ -102,6 +153,25 @@ class SchemaMigrationTests(unittest.TestCase):
                     "PRAGMA table_info(diagnostic_records)"
                 )
             ]
+        finally:
+            connection.close()
+
+    def raw_row_count(self, path):
+        connection = sqlite3.connect(str(path))
+        try:
+            return connection.execute(
+                "SELECT COUNT(*) FROM diagnostic_records"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
+    def raw_stored_sql(self, path):
+        connection = sqlite3.connect(str(path))
+        try:
+            return connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'diagnostic_records'"
+            ).fetchone()[0]
         finally:
             connection.close()
 
@@ -152,26 +222,127 @@ class SchemaMigrationTests(unittest.TestCase):
         reopened = KnowledgeStore(path)
         self.assertEqual(len(reopened.list_records()), 2)
 
+    def test_v1_chain_preserves_ids_and_continues_sequence(self):
+        path = self.make_v1_database(rows=3)
+        store = KnowledgeStore(path)
+        self.assertEqual(self.raw_version(path), SCHEMA_VERSION)
+        self.assertEqual(
+            [record["id"] for record in store.list_records()],
+            [3, 2, 1],
+        )
+
+        next_id = store.add_record(
+            wine_version="11.19",
+            distro="Manjaro",
+            error_category="memory",
+            evidence_status="PROVEN",
+            confidence="high",
+        )
+        self.assertEqual(next_id, 4)
+
+    def test_v2_database_migrates_to_v3_preserving_rows_and_ids(self):
+        path = self.make_v2_database(rows=3)
+
+        store = KnowledgeStore(path)
+        records = store.list_records()
+
+        self.assertEqual(self.raw_version(path), SCHEMA_VERSION)
+        self.assertEqual(len(records), 3)
+        self.assertEqual(
+            [record["id"] for record in records], [3, 2, 1]
+        )
+
+        # The rebuilt table carries the canonical v3 fingerprint.
+        self.assertEqual(
+            _normalize_sql(self.raw_stored_sql(path)),
+            _normalize_sql(EXPECTED_TABLE_SQL),
+        )
+
+        # AUTOINCREMENT sequence survived the rebuild.
+        next_id = store.add_record(
+            wine_version="11.19",
+            distro="Manjaro",
+            error_category="memory",
+            evidence_status="PROVEN",
+            confidence="high",
+        )
+        self.assertEqual(next_id, 4)
+
     # -- failed migrations must leave the database untouched -----------------
 
-    def test_migration_failure_is_atomic(self):
+    def test_loose_file_permissions_are_tightened_before_migration(self):
+        # A 0444 database file would previously make the migration fail.
+        # The store now tightens owner-readable/writable permissions
+        # *before* SQLite opens the file, so the migration proceeds and
+        # the file ends at 0600.
         path = self.make_v1_database()
-        # A read-only file makes the ALTER TABLE statements fail.
         os.chmod(path, 0o444)
 
-        try:
-            with self.assertRaises(KnowledgeStoreError):
-                KnowledgeStore(path)
-        finally:
-            os.chmod(path, 0o600)
-
-        self.assertEqual(self.raw_version(path), 1)
-        self.assertEqual(len(self.raw_column_names(path)), 8)
-
-        # The untouched v1 database migrates fine afterwards.
         store = KnowledgeStore(path)
+
+        mode = stat.S_IMODE(path.lstat().st_mode) & 0o777
+        self.assertEqual(mode, 0o600)
         self.assertEqual(len(store.list_records()), 2)
         self.assertEqual(self.raw_version(path), SCHEMA_VERSION)
+
+    def test_v2_to_v3_migration_rejects_poisoned_rows_atomically(self):
+        # A v2 database may contain rows that violate the v3 CHECK
+        # constraints (writable only through raw SQLite). The migration
+        # must fail closed: rollback, version stays 2, rows untouched.
+        path = self.make_v2_database(rows=2, poison="../evil")
+        before_sql = self.raw_stored_sql(path)
+
+        with self.assertRaises(KnowledgeStoreError):
+            KnowledgeStore(path)
+
+        self.assertEqual(self.raw_version(path), 2)
+        self.assertEqual(len(self.raw_column_names(path)), 10)
+        self.assertEqual(self.raw_row_count(path), 3)
+        self.assertEqual(self.raw_stored_sql(path), before_sql)
+
+        # Removing the poison lets the migration succeed normally.
+        connection = sqlite3.connect(str(path))
+        try:
+            connection.execute(
+                "DELETE FROM diagnostic_records "
+                "WHERE wine_version = '../evil'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        store = KnowledgeStore(path)
+        self.assertEqual(self.raw_version(path), SCHEMA_VERSION)
+        self.assertEqual(len(store.list_records()), 2)
+
+    def test_migration_failure_is_atomic(self):
+        # The tampered-fingerprint case: the migration must abort inside
+        # its transaction and leave the v1 database untouched (see
+        # test_tampered_v1_sql_is_refused_without_migration for the
+        # equivalent end-state assertions and the poisoned-row rollback
+        # test above for a mid-copy failure injection).
+        path = self.make_v1_database()
+        connection = sqlite3.connect(str(path))
+        try:
+            connection.execute(
+                "ALTER TABLE diagnostic_records ADD COLUMN raw_log TEXT"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(KnowledgeStoreError):
+            KnowledgeStore(path)
+
+        self.assertEqual(self.raw_version(path), 1)
+        self.assertEqual(len(self.raw_column_names(path)), 9)
+
+        # A clean v1 database migrates fine afterwards.
+        store = KnowledgeStore(self.make_v1_database(name="clean.sqlite3"))
+        self.assertEqual(len(store.list_records()), 2)
+        self.assertEqual(
+            self.raw_version(store.db_path), SCHEMA_VERSION
+        )
 
     def test_tampered_v1_sql_is_refused_without_migration(self):
         path = self.make_v1_database()

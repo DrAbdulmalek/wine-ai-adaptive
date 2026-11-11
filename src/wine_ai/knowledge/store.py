@@ -5,8 +5,11 @@ Security properties implemented here:
 - The database file is created with ``O_CREAT | O_EXCL | O_NOFOLLOW``
   and owner-only permissions (0600) from the moment it appears.
 - The immediate parent directory must not be a symbolic link, must be
-  owned by the current user, and is tightened to 0700 if group or
-  other access is found.
+  owned by the current user, and its permission bits are enforced to
+  exactly 0700 (any looser OR narrower mode is corrected before
+  SQLite opens the file).
+- An existing database file and existing sidecar files are tightened
+  to 0600 *before* SQLite opens them, not only after initialization.
 - Symbolic links and non-regular files at the database path or at the
   SQLite sidecar paths (-wal, -shm, -journal) are rejected instead of
   being followed.
@@ -18,11 +21,22 @@ Security properties implemented here:
   a single transaction, and partially initialized databases are
   detected and refused instead of being silently completed.
 - Sidecar files found next to the database are restricted to 0600.
-- Schema version 2 adds two optional columns (``error_code`` and
-  ``prefix_id``). Version 1 databases are upgraded by an atomic
-  migration that first verifies the stored CREATE statement and the
-  column set, and fails closed leaving the database untouched on any
-  mismatch or error.
+- The structured-field guarantees are enforced twice: by the Python
+  validation API *and* by SQL ``CHECK`` constraints inside SQLite
+  itself (schema version 3 covers ``wine_version``, ``distro``,
+  ``error_code`` and ``prefix_id`` in addition to the choice fields).
+  A row written through a raw SQLite connection that violates any
+  structured rule is rejected by the database engine.
+- Records read back for export are re-validated against the same
+  rules before leaving the store; a tampered database fails closed
+  instead of exporting unstructured data.
+- Schema version 2 added two optional columns (``error_code`` and
+  ``prefix_id``). Version 3 rebuilds the table with full ``CHECK``
+  coverage. Version 1 and version 2 databases are upgraded by atomic
+  migrations whose pre-checks (stored CREATE statement and column
+  set) run *inside* the same ``BEGIN IMMEDIATE`` transaction as the
+  migration itself; any mismatch or error rolls back and leaves the
+  database untouched.
 
 Documented limitations (these are NOT fully eliminated):
 
@@ -46,7 +60,8 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+SCHEMA_VERSION_V2 = 2
 MAX_BATCH_SIZE = 100
 
 ERROR_CATEGORIES = {
@@ -75,11 +90,74 @@ TABLE_NAME = "diagnostic_records"
 # Sidecar files SQLite can place next to the database file.
 SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
-# Canonical schema (version 2). The sqlite_master SQL stored by
+# Canonical schema (version 3). The sqlite_master SQL stored by
 # databases created by this library matches this text after whitespace
 # normalization (SQLite strips "IF NOT EXISTS" when storing the
 # statement). Any other definition is refused as incompatible.
+#
+# The CHECK constraints mirror the Python-side validation rules so the
+# database engine itself is the last line of defense: values written
+# through a raw SQLite connection are enforced without this API.
 EXPECTED_TABLE_SQL = """
+CREATE TABLE diagnostic_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    wine_version TEXT NOT NULL,
+    distro TEXT NOT NULL,
+    error_category TEXT NOT NULL,
+    evidence_status TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    gpu_vendor TEXT NOT NULL,
+    error_code TEXT,
+    prefix_id TEXT,
+    CHECK (error_category IN (
+        'missing_module',
+        'graphics',
+        'memory',
+        'startup',
+        'unknown'
+    )),
+    CHECK (evidence_status IN (
+        'PROVEN',
+        'PARTIALLY_PROVEN',
+        'UNPROVEN',
+        'CONTRADICTED',
+        'BLOCKED'
+    )),
+    CHECK (confidence IN (
+        'low', 'medium', 'high'
+    )),
+    CHECK (gpu_vendor IN (
+        'intel', 'amd', 'nvidia', 'unknown'
+    )),
+    CHECK (length(wine_version) BETWEEN 1 AND 64
+        AND substr(wine_version, 1, 1) GLOB '[A-Za-z0-9]'
+        AND wine_version NOT GLOB '*[^A-Za-z0-9._+ -]*'
+        AND wine_version = trim(wine_version)),
+    CHECK (length(distro) BETWEEN 1 AND 64
+        AND substr(distro, 1, 1) GLOB '[A-Za-z0-9]'
+        AND distro NOT GLOB '*[^A-Za-z0-9._+ -]*'
+        AND distro = trim(distro)),
+    CHECK (prefix_id IS NULL OR (
+        length(prefix_id) BETWEEN 1 AND 64
+        AND substr(prefix_id, 1, 1) GLOB '[A-Za-z0-9]'
+        AND prefix_id NOT GLOB '*[^A-Za-z0-9._+ -]*'
+        AND prefix_id = trim(prefix_id))),
+    CHECK (error_code IS NULL OR (
+        (substr(error_code, 1, 2) = '0x'
+            AND length(error_code) BETWEEN 3 AND 10
+            AND substr(error_code, 3) NOT GLOB '*[^0-9A-F]*')
+        OR (length(error_code) BETWEEN 2 AND 64
+            AND substr(error_code, 1, 1) GLOB '[A-Z]'
+            AND error_code NOT GLOB '*[^A-Z0-9_]*')
+    ))
+)
+"""
+
+# Version 2 canonical schema. Databases stamped with version 2 carry
+# this stored CREATE statement; they are upgraded to version 3 by an
+# atomic table rebuild.
+EXPECTED_TABLE_SQL_V2 = """
 CREATE TABLE diagnostic_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -116,7 +194,7 @@ CREATE TABLE diagnostic_records (
 
 # Version 1 canonical schema. Databases migrated from version 1 keep
 # this stored CREATE statement (ALTER TABLE does not rewrite it), so
-# it is accepted as long as the column set matches version 2 exactly.
+# it is accepted as long as the column set matches version 1 exactly.
 EXPECTED_TABLE_SQL_V1 = """
 CREATE TABLE diagnostic_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,6 +265,25 @@ MAX_LIST_LIMIT = 1000
 QUERY_LIMIT_DEFAULT = 100
 QUERY_LIMIT_MAX = 1000
 
+# Column set of a stored record as returned by the read API. Export
+# re-validation refuses any row carrying extra or missing columns.
+STORED_RECORD_COLUMNS = frozenset({
+    "id",
+    "created_at",
+    "wine_version",
+    "distro",
+    "error_category",
+    "evidence_status",
+    "confidence",
+    "gpu_vendor",
+    "error_code",
+    "prefix_id",
+})
+
+_ISO_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+)
+
 
 class KnowledgeStoreError(Exception):
     pass
@@ -247,6 +344,74 @@ def _normalize_sql(sql):
     return " ".join(sql.split())
 
 
+def validate_existing_record(record):
+    """Validate a row as read back from the database.
+
+    This is the fail-closed export gate: every record that leaves the
+    store (e.g. via ``wine_ai.portability``) is checked against the
+    same rules the write path enforces, plus the storage-only columns
+    (``id`` and ``created_at``). A database tampered with through a
+    raw SQLite connection therefore cannot export its rows; the
+    export fails instead of emitting unstructured data.
+
+    Raises ``ValueError`` on any violation; returns the record
+    unchanged when valid.
+    """
+    if not isinstance(record, dict):
+        raise ValueError("Stored record must be a dictionary")
+
+    unknown = set(record) - STORED_RECORD_COLUMNS
+    if unknown:
+        raise ValueError(
+            f"Stored record has unexpected columns: {sorted(unknown)}"
+        )
+
+    record_id = record.get("id")
+    if (
+        not isinstance(record_id, int)
+        or isinstance(record_id, bool)
+        or record_id < 1
+    ):
+        raise ValueError("Stored record id is invalid")
+
+    created_at = record.get("created_at")
+    if not isinstance(created_at, str) or not _ISO_TIMESTAMP.match(
+        created_at
+    ):
+        raise ValueError("Stored record created_at is invalid")
+    try:
+        datetime.fromisoformat(created_at)
+    except ValueError:
+        raise ValueError("Stored record created_at is invalid") from None
+
+    _validate_label(record.get("wine_version"), "wine_version")
+    _validate_label(record.get("distro"), "distro")
+    _validate_choice(
+        record.get("error_category"),
+        ERROR_CATEGORIES,
+        "error_category",
+    )
+    _validate_choice(
+        record.get("evidence_status"),
+        EVIDENCE_STATUSES,
+        "evidence_status",
+    )
+    _validate_choice(
+        record.get("confidence"), CONFIDENCE_LEVELS, "confidence"
+    )
+    _validate_choice(record.get("gpu_vendor"), GPU_VENDORS, "gpu_vendor")
+
+    error_code = record.get("error_code")
+    if error_code is not None and normalize_error_code(error_code) != error_code:
+        raise ValueError("Stored error_code is not in canonical form")
+
+    prefix_id = record.get("prefix_id")
+    if prefix_id is not None:
+        _validate_label(prefix_id, "prefix_id")
+
+    return record
+
+
 class KnowledgeStore:
     """
     Local structured diagnostic storage.
@@ -297,7 +462,10 @@ class KnowledgeStore:
             raise KnowledgeStoreError(
                 "Database directory is owned by a different user"
             )
-        if stat.S_IMODE(info.st_mode) & 0o077:
+        # Enforce exactly 0700: a looser mode (0755) would expose the
+        # database to group/other, and a narrower one (0500) would break
+        # writing. Both are corrected to the required mode.
+        if stat.S_IMODE(info.st_mode) & 0o777 != 0o700:
             try:
                 os.chmod(parent, 0o700)
             except OSError as exc:
@@ -345,6 +513,15 @@ class KnowledgeStore:
             raise KnowledgeStoreError(
                 f"Sidecar file is owned by a different user: {sidecar.name}"
             )
+        # Tighten an existing sidecar *before* SQLite touches it.
+        if stat.S_IMODE(info.st_mode) & 0o777 != 0o600:
+            try:
+                os.chmod(sidecar, 0o600)
+            except OSError as exc:
+                raise KnowledgeStoreError(
+                    "Could not restrict sidecar file permissions: "
+                    f"{sidecar.name}"
+                ) from exc
 
     def _verify_database_file(self):
         try:
@@ -366,6 +543,15 @@ class KnowledgeStore:
             raise KnowledgeStoreError(
                 "Database file is owned by a different user"
             )
+
+        # Tighten an existing database file *before* SQLite opens it.
+        if stat.S_IMODE(info.st_mode) & 0o777 != 0o600:
+            try:
+                os.chmod(self.db_path, 0o600)
+            except OSError as exc:
+                raise KnowledgeStoreError(
+                    "Could not restrict database file permissions"
+                ) from exc
 
         for suffix in SIDECAR_SUFFIXES:
             self._verify_sidecar(suffix)
@@ -416,6 +602,21 @@ class KnowledgeStore:
 
     @staticmethod
     def _verify_schema(connection):
+        version = connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        expected_sql_by_version = {
+            SCHEMA_VERSION: EXPECTED_TABLE_SQL,
+            SCHEMA_VERSION_V2: EXPECTED_TABLE_SQL_V2,
+            1: EXPECTED_TABLE_SQL_V1,
+        }
+        expected_sql = expected_sql_by_version.get(version)
+        if expected_sql is None:
+            raise KnowledgeStoreError(
+                f"Unsupported database schema version: {version}"
+            )
+
         row = connection.execute(
             "SELECT sql FROM sqlite_master "
             "WHERE type = 'table' AND name = ?",
@@ -426,20 +627,20 @@ class KnowledgeStore:
                 "Schema verification failed: table is missing"
             )
         normalized = _normalize_sql(row[0])
-        if normalized not in (
-            _normalize_sql(EXPECTED_TABLE_SQL),
-            _normalize_sql(EXPECTED_TABLE_SQL_V1),
-        ):
+        if normalized != _normalize_sql(expected_sql):
             raise KnowledgeStoreError(
                 "Schema verification failed: incompatible table definition"
             )
 
+        expected_columns = (
+            EXPECTED_COLUMNS_V1 if version == 1 else EXPECTED_COLUMNS
+        )
         actual = KnowledgeStore._read_columns(connection)
-        if set(actual) != set(EXPECTED_COLUMNS):
+        if set(actual) != set(expected_columns):
             raise KnowledgeStoreError(
                 "Schema verification failed: incompatible column set"
             )
-        for name, expected in EXPECTED_COLUMNS.items():
+        for name, expected in expected_columns.items():
             if actual[name] != expected:
                 raise KnowledgeStoreError(
                     f"Schema verification failed: unexpected column {name}"
@@ -448,40 +649,130 @@ class KnowledgeStore:
     def _migrate_v1_to_v2(self, connection):
         """Atomically upgrade a verified version 1 database.
 
-        Pre-checks are strict: the stored CREATE statement must match
-        the canonical version 1 text and the column set must be exactly
-        the version 1 columns. Any failure rolls the migration back and
-        leaves the database on version 1, unchanged.
+        All pre-checks run *inside* the ``BEGIN IMMEDIATE`` transaction,
+        so no other process can alter the schema between verification
+        and migration (the check-then-migrate window is closed). The
+        stored CREATE statement must match the canonical version 1 text
+        and the column set must be exactly the version 1 columns. Any
+        failure rolls the migration back and leaves the database on
+        version 1, unchanged.
         """
-        row = connection.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'table' AND name = ?",
-            (TABLE_NAME,),
-        ).fetchone()
-        if row is None or not row[0]:
-            raise KnowledgeStoreError(
-                "Schema migration failed: table is missing"
-            )
-        if _normalize_sql(row[0]) != _normalize_sql(EXPECTED_TABLE_SQL_V1):
-            raise KnowledgeStoreError(
-                "Schema migration failed: incompatible table definition"
-            )
-
-        actual = self._read_columns(connection)
-        if set(actual) != set(EXPECTED_COLUMNS_V1):
-            raise KnowledgeStoreError(
-                "Schema migration failed: incompatible column set"
-            )
-
         try:
             connection.execute("BEGIN IMMEDIATE")
+
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = ?",
+                (TABLE_NAME,),
+            ).fetchone()
+            if row is None or not row[0]:
+                raise KnowledgeStoreError(
+                    "Schema migration failed: table is missing"
+                )
+            if _normalize_sql(row[0]) != _normalize_sql(
+                EXPECTED_TABLE_SQL_V1
+            ):
+                raise KnowledgeStoreError(
+                    "Schema migration failed: incompatible table definition"
+                )
+
+            actual = self._read_columns(connection)
+            if set(actual) != set(EXPECTED_COLUMNS_V1):
+                raise KnowledgeStoreError(
+                    "Schema migration failed: incompatible column set"
+                )
+
             connection.execute(
                 f"ALTER TABLE {TABLE_NAME} ADD COLUMN error_code TEXT"
             )
             connection.execute(
                 f"ALTER TABLE {TABLE_NAME} ADD COLUMN prefix_id TEXT"
             )
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute(
+                f"PRAGMA user_version = {SCHEMA_VERSION_V2}"
+            )
+            connection.commit()
+        except Exception as exc:
+            connection.rollback()
+            raise KnowledgeStoreError(
+                "Schema migration failed: database left unchanged"
+            ) from exc
+
+    def _migrate_v2_to_v3(self, connection):
+        """Atomically upgrade a verified version 2 database to version 3.
+
+        SQLite cannot add a CHECK constraint to an existing table, so
+        the upgrade rebuilds the table: rename the old table, create
+        the canonical version 3 definition, copy every row, drop the
+        backup, and stamp version 3 — all inside one
+        ``BEGIN IMMEDIATE`` transaction whose pre-checks (stored SQL
+        fingerprint and column set) also run inside the transaction.
+
+        A row that violates the new CHECK constraints (possible only
+        through raw SQLite writes into a version 2 database) makes the
+        copy fail, which rolls the whole migration back and leaves the
+        database on version 2, unchanged. Fail closed by design.
+        """
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = ?",
+                (TABLE_NAME,),
+            ).fetchone()
+            if row is None or not row[0]:
+                raise KnowledgeStoreError(
+                    "Schema migration failed: table is missing"
+                )
+            if _normalize_sql(row[0]) != _normalize_sql(
+                EXPECTED_TABLE_SQL_V2
+            ):
+                raise KnowledgeStoreError(
+                    "Schema migration failed: incompatible table definition"
+                )
+
+            actual = self._read_columns(connection)
+            if set(actual) != set(EXPECTED_COLUMNS):
+                raise KnowledgeStoreError(
+                    "Schema migration failed: incompatible column set"
+                )
+
+            backup_name = f"{TABLE_NAME}_v2_backup"
+            connection.execute(
+                f"ALTER TABLE {TABLE_NAME} RENAME TO {backup_name}"
+            )
+            connection.execute(EXPECTED_TABLE_SQL)
+            connection.execute(f"""
+                INSERT INTO {TABLE_NAME} (
+                    id,
+                    created_at,
+                    wine_version,
+                    distro,
+                    error_category,
+                    evidence_status,
+                    confidence,
+                    gpu_vendor,
+                    error_code,
+                    prefix_id
+                )
+                SELECT
+                    id,
+                    created_at,
+                    wine_version,
+                    distro,
+                    error_category,
+                    evidence_status,
+                    confidence,
+                    gpu_vendor,
+                    error_code,
+                    prefix_id
+                FROM {backup_name}
+            """)
+            connection.execute(f"DROP TABLE {backup_name}")
+            connection.execute(
+                f"PRAGMA user_version = {SCHEMA_VERSION}"
+            )
             connection.commit()
         except Exception as exc:
             connection.rollback()
@@ -499,7 +790,7 @@ class KnowledgeStore:
                 "PRAGMA user_version"
             ).fetchone()[0]
 
-            if version not in (0, 1, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION_V2, SCHEMA_VERSION):
                 raise KnowledgeStoreError(
                     f"Unsupported database schema version: {version}"
                 )
@@ -511,7 +802,11 @@ class KnowledgeStore:
                     "Partial initialization detected: table exists but "
                     "schema version is not stamped"
                 )
-            if version in (1, SCHEMA_VERSION) and not table_exists:
+            if version in (
+                1,
+                SCHEMA_VERSION_V2,
+                SCHEMA_VERSION,
+            ) and not table_exists:
                 raise KnowledgeStoreError(
                     "Partial initialization detected: schema version is "
                     "stamped but table is missing"
@@ -530,6 +825,9 @@ class KnowledgeStore:
                     raise
             elif version == 1:
                 self._migrate_v1_to_v2(connection)
+                self._migrate_v2_to_v3(connection)
+            elif version == SCHEMA_VERSION_V2:
+                self._migrate_v2_to_v3(connection)
 
             self._verify_schema(connection)
         finally:
