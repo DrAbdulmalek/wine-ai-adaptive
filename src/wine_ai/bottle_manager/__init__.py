@@ -1,11 +1,9 @@
-"""Read-only Wine prefix management (CrossOver clean-room spec, P0 tier).
+"""Wine prefix discovery and explicitly approved bottle creation.
 
-Only discovery/inspection live here for now. Write operations
-(create/clone/backup/restore/delete) are deliberately absent until a
-separate approval layer, threat-model entries and tests exist — see
-``docs/CROSSOVER_CLEAN_ROOM_SPEC.md`` section 6.4.
+Discovery remains read-only. Create produces only an empty, uninitialized
+managed directory; it does not run Wine or initialize a prefix.
 """
-
 from wine_ai.bottle_manager.discovery import discover_prefixes, inspect_prefix
+from wine_ai.bottle_manager.create import create_bottle
 
-__all__ = ["discover_prefixes", "inspect_prefix"]
+__all__ = ["discover_prefixes", "inspect_prefix", "create_bottle"]
