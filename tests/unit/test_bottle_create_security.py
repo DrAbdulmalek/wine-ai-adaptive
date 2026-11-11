@@ -20,7 +20,9 @@ class CreateBottleSecurityTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.home=Path(self.tmp.name)
     def tearDown(self): self.tmp.cleanup()
-    def call_create(self,name): return create_bottle(name,home=self.home)
+    def call_create(self,name):
+        with mock.patch("wine_ai.bottle_manager.create.Path.home",return_value=self.home):
+            return create_bottle(name)
     def audit_records(self):
         p=audit_file(self.home); self.assertTrue(p.is_file()); self.assertFalse(p.is_symlink())
         return [json.loads(x) for x in p.read_text(encoding="utf-8").splitlines()]
