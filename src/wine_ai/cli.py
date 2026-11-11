@@ -1,11 +1,15 @@
-"""Read-only diagnostic status CLI for wine-ai-adaptive.
+"""Read-only diagnostic CLI for wine-ai-adaptive.
 
 This tool only observes: it never modifies Wine, never touches a
-prefix, never stores raw logs, and never calls a remote AI provider.
+prefix, never stores raw logs, never writes a database, and never
+calls a remote AI provider. The ``diagnose`` subcommand reads a local
+log file and prints structured findings only — nothing is persisted.
 
 Usage:
-    wine-ai status          # human-readable summary
-    wine-ai status --json   # structured JSON payload
+    wine-ai status                    # human-readable summary
+    wine-ai status --json             # structured JSON payload
+    wine-ai diagnose --log FILE       # triage a local Wine log (read-only)
+    wine-ai diagnose --log FILE --json
 """
 
 from __future__ import annotations
@@ -20,7 +24,12 @@ try:  # POSIX: die silently when the consumer closes the pipe (e.g. head)
 except (AttributeError, ValueError):  # pragma: no cover - non-POSIX
     pass
 
+from pathlib import Path
+
+from wine_ai.diagnostics.codes import extract_error_codes
+from wine_ai.diagnostics.log_parser import MAX_LOG_SIZE, inspect_log
 from wine_ai.environment.inventory import collect_environment
+from wine_ai.evidence import Evidence, EvidenceStatus
 from wine_ai.gpu_compatibility.probe import probe_vulkan
 
 
@@ -64,6 +73,82 @@ def status_command(as_json: bool) -> int:
     return 0
 
 
+def _read_log_text(path: str) -> str:
+    """Read a local log with the same caps as ``inspect_log``.
+
+    Regular files only, hard size cap of ``MAX_LOG_SIZE``, decoded
+    with ``errors="replace"``. Raises ``ValueError`` for anything that
+    does not look like a safely readable log file.
+    """
+    log_path = Path(path).expanduser()
+    if not log_path.is_file():
+        raise ValueError(f"not a regular file: {log_path}")
+    if log_path.stat().st_size > MAX_LOG_SIZE:
+        raise ValueError(f"log exceeds {MAX_LOG_SIZE} bytes")
+    return log_path.read_text(encoding="utf-8", errors="replace")
+
+
+def diagnose_command(log_path: str, as_json: bool) -> int:
+    """Triage a local Wine/Proton log: parse, classify, print.
+
+    Strictly read-only: the log is never stored, no database is
+    created, and the output contains only structured codes, heuristic
+    categories and confidence levels — never raw log lines.
+    """
+    summary, evidence = inspect_log(log_path)
+
+    findings = []
+    if "read_error" not in summary:
+        try:
+            text = _read_log_text(log_path)
+            findings = extract_error_codes(text)
+        except (OSError, ValueError) as exc:
+            evidence = evidence + [
+                Evidence("diagnose_read", EvidenceStatus.BLOCKED,
+                         "Log could not be re-read safely",
+                         str(log_path), {"error": str(exc)})
+            ]
+
+    if as_json:
+        payload = {
+            "log": str(Path(log_path).expanduser()),
+            "findings": findings,
+            "log_summary": summary,
+            "evidence": _evidence_to_dicts(evidence),
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print("===== WINE AI ADAPTIVE DIAGNOSE =====")
+    print(f"Log: {Path(log_path).expanduser()}")
+
+    if findings:
+        print("Structured error codes:")
+        for item in findings:
+            category = item["category"] or "unmapped"
+            print(
+                f"  - {item['kind']:<8} {item['code']:<16} "
+                f"category={category:<16} confidence={item['confidence']}"
+            )
+    else:
+        print("No structured error codes found.")
+
+    pattern_hits = summary.get("matches", {})
+    if pattern_hits:
+        print("Pattern hits:")
+        for name, count in pattern_hits.items():
+            print(f"  - {name}: {count}")
+
+    print("Evidence:")
+    for item in _evidence_to_dicts(evidence):
+        print(f"  - {item['key']}: {item['status']} - {item['summary']}")
+
+    print("NOTE: findings are heuristic triage hints, not root-cause "
+          "proof. Nothing was stored or modified.")
+    print("===== END DIAGNOSE =====")
+    return 0
+
+
 def _add_json_flag(parser, *, suppressed=False):
     parser.add_argument(
         "--json",
@@ -92,12 +177,30 @@ def main(argv: list[str] | None = None) -> int:
     # repeated after the subcommand.
     _add_json_flag(status_parser, suppressed=True)
 
+    diagnose_parser = subparsers.add_parser(
+        "diagnose",
+        help="Read-only triage of a local Wine/Proton log "
+             "(prints findings, stores nothing).",
+    )
+    diagnose_parser.add_argument(
+        "--log",
+        required=True,
+        help="Path to a local Wine/Proton log file (max 2 MiB).",
+    )
+    _add_json_flag(diagnose_parser, suppressed=True)
+
     args = parser.parse_args(argv)
 
     command = args.command or "status"
 
     if command == "status":
         return status_command(as_json=bool(args.json))
+
+    if command == "diagnose":
+        return diagnose_command(
+            log_path=args.log,
+            as_json=bool(args.json),
+        )
 
     parser.print_help()
     return 1

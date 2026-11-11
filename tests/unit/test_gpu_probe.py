@@ -1,6 +1,59 @@
 import unittest
 
-from wine_ai.gpu_compatibility.probe import probe_vulkan
+from wine_ai.gpu_compatibility.probe import parse_vulkan_summary, probe_vulkan
+
+SAMPLE_SUMMARY = """
+Devices:
+========
+GPU0:
+        gpuDeviceUUID   = 86801659-0200-0000-0002
+        vendorID = 0x8086
+        deviceName = Intel(R) HD Graphics 620
+
+GPU1:
+        vendorID = 0x10DE
+        deviceName = NVIDIA GeForce RTX 3060
+
+GPU2:
+        vendorID = 0x1234
+        deviceName = Unknown Virtual GPU
+"""
+
+
+class VulkanSummaryParsingTests(unittest.TestCase):
+
+    def test_parses_device_names(self):
+        parsed = parse_vulkan_summary(SAMPLE_SUMMARY)
+        self.assertEqual(
+            parsed["device_names"],
+            [
+                "Intel(R) HD Graphics 620",
+                "NVIDIA GeForce RTX 3060",
+                "Unknown Virtual GPU",
+            ],
+        )
+
+    def test_maps_vendor_ids(self):
+        parsed = parse_vulkan_summary(SAMPLE_SUMMARY)
+        self.assertEqual(parsed["vendors"], ["intel", "nvidia", "unknown"])
+        self.assertEqual(parsed["primary_vendor"], "intel")
+
+    def test_no_devices_yields_unknown(self):
+        parsed = parse_vulkan_summary("no devices here")
+        self.assertEqual(parsed["device_names"], [])
+        self.assertEqual(parsed["vendors"], [])
+        self.assertEqual(parsed["primary_vendor"], "unknown")
+
+    def test_device_list_is_capped(self):
+        text = "\n".join(
+            "deviceName = GPU %d" % i for i in range(25)
+        )
+        parsed = parse_vulkan_summary(text)
+        self.assertEqual(len(parsed["device_names"]), 10)
+
+    def test_device_name_truncated_to_128(self):
+        parsed = parse_vulkan_summary("deviceName = " + "x" * 500)
+        self.assertEqual(len(parsed["device_names"][0]), 128)
 
 
 class GPUProbeTests(unittest.TestCase):
