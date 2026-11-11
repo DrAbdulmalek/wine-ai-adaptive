@@ -21,8 +21,8 @@ __all__ = [
     'recipe_finding',
 ]
 
-RECIPE_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9-]{0,55}
-ISO_DATE_PATTERN = re.compile(r'^\\d{4}-\\d{2}-\\d{2}$')
+RECIPE_NAME_PATTERN = re.compile(r'^[a-z0-9][a-z0-9-]{0,55}$')
+ISO_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 RECIPE_ERROR_CODE_PREFIX = 'RECIPE_'
 
 KNOWN_WINETRICKS_VERBS = frozenset({
