@@ -47,16 +47,22 @@ jobs:
         if: failure()
         run: |
           {
-            echo '### unittest failure diagnosis (py ${{ matrix.python-version }})'
+            echo "unittest failure diagnosis (py ${{ matrix.python-version }}) run ${{ github.run_id }}"
             echo '```text'
             grep -E "^(FAIL|ERROR):|^Ran |^OK|^FAILED" /tmp/unittest.log | head -60
             echo '--- tail ---'
-            tail -n 220 /tmp/unittest.log
+            tail -n 260 /tmp/unittest.log
             echo '```'
-          } > /tmp/diag.md
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
-            -d "$(jq -n --rawfile body /tmp/diag.md '{body: $body}')" > /dev/null
-          echo "diagnosis posted"
+          } > diag.txt
+          B64=$(base64 -w0 diag.txt)
+          jq -n --arg b "$B64" '{message:"ci diagnosis (temporary)", content:$b, branch:"${{ github.event.pull_request.head.ref }}"}' > payload.json
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o putresp.json -w "%{http_code}" -X PUT \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/${{ github.repository }}/contents/ci-diagnosis/py${{ matrix.python-version }}.txt \
+              -d @payload.json)
+            echo "PUT attempt $i -> $code"
+            [ "$code" = "200" ] && break
+            sleep 8
+          done
