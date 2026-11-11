@@ -17,7 +17,7 @@ The Create Bottle threat model T-CB-01…T-CB-10, detailed design, and security 
 5. The managed prefixes root is rejected if its identity aliases protected `~/.wine`, including a symlinked `~/.wine` that resolves to that root.
 6. The target is created relative to the managed-root descriptor. Existing files, directories, and symlinks are never replaced.
 7. The new directory is opened without following links, checked with `fstat`, set to `0700` through its descriptor, and verified again. Cleanup is limited to the still-empty object whose opened identity matches the created identity.
-8. Audit records are appended to `~/.local/share/wine-ai-adaptive/logs/create-bottle.jsonl`, outside the prefixes tree. The log is a singly-linked, user-owned regular file with mode `0600`, opened with `O_NOFOLLOW`; hard-linked audit targets are rejected. Records contain a relative path only; no absolute home path is persisted.
+8. Audit records are appended to `~/.local/share/wine-ai-adaptive/logs/create-bottle.jsonl`, outside the prefixes tree. The log is a singly-linked, user-owned regular file with mode `0600`, opened with `O_NOFOLLOW`; hard-linked audit targets are rejected. Records contain a relative path only; no absolute home path is persisted. Appends are serialized with an advisory file lock; partial writes are rolled back to the previous file length before the operation is reported as failed.
 9. Success is reported as `EMPTY_UNINITIALIZED`. No Wine, winetricks, shell, subprocess, or external command is invoked.
 
 ## Audit-log exception
@@ -32,7 +32,7 @@ For invalid or rejected requests, no Bottle and no entry under `prefixes/` may b
 
 ## Test mapping
 
-`tests/unit/test_bottle_create_security.py` uses stdlib `unittest` and temporary directories only. It covers validation, confinement, symlinks, protected-root aliasing, pre-existing targets, ownership/mode/type, cleanup, audit success/failure/privacy, no external execution, and repeated descriptor lifecycle.
+`tests/unit/test_bottle_create_security.py` uses stdlib `unittest` and temporary directories only. It covers validation, confinement, symlinks, protected-root aliasing, pre-existing targets, ownership/mode/type, cleanup, audit success/failure/privacy, partial-write rollback, no external execution, and descriptor open/close accounting.
 
 ## Review gates
 
