@@ -201,10 +201,10 @@ class CreateBottleSecurityTests(unittest.TestCase):
         def track_close(fd):
             if fd in opened: closed.add(fd)
             return real_close(fd)
-        with mock.patch("wine_ai.bottle_manager.create.os.open",side_effect=track_open), \\
-             mock.patch("wine_ai.bottle_manager.create.os.dup",side_effect=track_dup), \\
-             mock.patch("wine_ai.bottle_manager.create.os.close",side_effect=track_close):
-            info,_=self.call_create("fd-check")
+        with mock.patch("wine_ai.bottle_manager.create.os.open",side_effect=track_open):
+            with mock.patch("wine_ai.bottle_manager.create.os.dup",side_effect=track_dup):
+                with mock.patch("wine_ai.bottle_manager.create.os.close",side_effect=track_close):
+                    info,_=self.call_create("fd-check")
         self.assertIsNotNone(info)
         self.assertTrue(opened, "test did not observe any descriptors")
         self.assertEqual(opened,closed, f"descriptor leak(s): {opened-closed}")
