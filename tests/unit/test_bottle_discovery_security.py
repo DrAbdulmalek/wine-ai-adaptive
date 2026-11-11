@@ -50,6 +50,40 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             for item in evidence
         ))
 
+    def test_system_reg_replaced_by_fifo_after_stat_does_not_block(self):
+        prefix = make_prefix(self.home)
+        directory_fd = discovery._open_dir_path(prefix)
+        real_open = os.open
+        swapped = False
+
+        def racing_open(path, flags, *args, **kwargs):
+            nonlocal swapped
+            if path == "system.reg" and kwargs.get("dir_fd") is not None and not swapped:
+                (prefix / "system.reg").unlink()
+                os.mkfifo(prefix / "system.reg")
+                swapped = True
+            return real_open(path, flags, *args, **kwargs)
+
+        try:
+            with mock.patch.object(discovery.os, "open", side_effect=racing_open):
+                architecture, error = discovery._read_reg_arch(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+        self.assertTrue(swapped)
+        self.assertIsNone(architecture)
+        self.assertIn("changed identity or type", error)
+
+    def test_symlinked_default_prefix_target_stays_protected(self):
+        target = make_prefix(self.home, "real-default")
+        (self.home / ".wine").symlink_to(target, target_is_directory=True)
+        os.environ["WINEPREFIX"] = str(target)
+
+        prefixes, _ = discover_prefixes(home=self.home)
+        matches = [item for item in prefixes if item["path"] == str(target)]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0]["protected"])
+
     def test_fifo_drive_c_is_rejected_as_wrong_marker_type(self):
         prefix = make_prefix(self.home)
         (prefix / "drive_c").rmdir()
@@ -83,8 +117,8 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
 
         info, evidence = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
-        self.assertFalse(info["syswow64_present"])
-        self.assertFalse(info["arch_conflict"])
+        self.assertIsNone(info["syswow64_present"])
+        self.assertIsNone(info["arch_conflict"])
         self.assertTrue(any(
             item.status.value == "BLOCKED"
             and "Nested Windows architecture path" in item.summary
