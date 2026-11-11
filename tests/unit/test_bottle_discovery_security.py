@@ -3,6 +3,7 @@
 All fixtures are temporary. These tests exercise path traversal, unusual
 file types, protected-prefix precedence, race resistance, and scan bounds.
 """
+import errno
 import os
 import stat
 import tempfile
@@ -269,6 +270,114 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
                     os.readlink(path) if stat.S_ISLNK(st.st_mode) else None,
                 )
         self.assertEqual(before, after)
+
+    def test_identity_fstat_failure_blocks_candidate_and_scan_continues(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        broken = make_prefix(managed, "a-broken")
+        good = make_prefix(managed, "z-good")
+        real_identity = discovery._identity
+        calls = 0
+
+        def fail_first_identity(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError(errno.EIO, "injected fstat failure")
+            return real_identity(fd)
+
+        with mock.patch.object(discovery, "_identity", side_effect=fail_first_identity):
+            prefixes, evidence = discover_prefixes(home=self.home)
+
+        self.assertFalse(any(item["path"] == str(broken) for item in prefixes))
+        self.assertTrue(any(item["path"] == str(good) for item in prefixes))
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "identity could not be verified" in item.summary
+            for item in evidence
+        ))
+
+    def test_identity_fstat_failure_still_closes_candidate_descriptor(self):
+        prefix = make_prefix(self.home)
+        captured = []
+
+        def fail_identity(fd):
+            captured.append(fd)
+            raise OSError(errno.EIO, "injected fstat failure")
+
+        with mock.patch.object(discovery, "_identity", side_effect=fail_identity):
+            info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNone(info)
+        self.assertEqual(len(captured), 1)
+        with self.assertRaises(OSError) as raised:
+            os.fstat(captured[0])
+        self.assertEqual(raised.exception.errno, errno.EBADF)
+        self.assertTrue(any(item.status.value == "BLOCKED" for item in evidence))
+
+    def test_marker_stat_oserrors_fail_closed(self):
+        prefix = make_prefix(self.home)
+        for error_number in (errno.EACCES, errno.EPERM, errno.ESTALE, errno.EIO):
+            with self.subTest(errno=error_number):
+                real_stat_at = discovery._stat_at
+
+                def fail_user_marker(fd, name, *, _error=error_number):
+                    if name == "user.reg":
+                        raise OSError(_error, os.strerror(_error))
+                    return real_stat_at(fd, name)
+
+                with mock.patch.object(discovery, "_stat_at", side_effect=fail_user_marker):
+                    info, evidence = inspect_prefix(prefix, home=self.home)
+
+                self.assertIsNone(info)
+                self.assertTrue(any(
+                    item.status.value == "BLOCKED"
+                    and "marker could not be examined safely" in item.summary
+                    for item in evidence
+                ))
+
+    def test_nested_probe_descriptor_exhaustion_is_unknown_not_absent(self):
+        prefix = make_prefix(self.home)
+        for error_number in (errno.EMFILE, errno.ENFILE):
+            with self.subTest(errno=error_number):
+                with mock.patch.object(
+                    discovery.os, "dup",
+                    side_effect=OSError(error_number, os.strerror(error_number)),
+                ):
+                    info, evidence = inspect_prefix(prefix, home=self.home)
+
+                self.assertIsNotNone(info)
+                self.assertIsNone(info["syswow64_present"])
+                self.assertIsNone(info["arch_conflict"])
+                self.assertTrue(any(
+                    item.status.value == "BLOCKED"
+                    and "Nested Windows architecture path" in item.summary
+                    for item in evidence
+                ))
+
+    def test_container_scandir_oserror_is_blocked_without_crashing(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        make_prefix(managed, "good")
+        real_scandir = os.scandir
+
+        def fail_target_root(path):
+            if isinstance(path, int):
+                raise OSError(errno.EIO, "injected scandir failure")
+            return real_scandir(path)
+
+        with mock.patch.object(discovery.os, "scandir", side_effect=fail_target_root):
+            prefixes, evidence = discover_prefixes(
+                home=self.home,
+                container_roots=[managed],
+            )
+
+        self.assertFalse(prefixes)
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "Container root could not be listed" in item.summary
+            for item in evidence
+        ))
 
 
 if __name__ == "__main__":
