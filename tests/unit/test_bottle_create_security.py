@@ -174,9 +174,40 @@ class CreateBottleSecurityTests(unittest.TestCase):
         info,_=self.call_create("confined"); self.assertIsNotNone(info)
         target=Path(info["path"]); self.assertEqual(target.parent,managed_root(self.home)); target.rmdir()
 
-    def test_G03_repeated_calls_close_descriptors(self):
-        for i in range(20):
-            info,_=self.call_create(f"fd-{i}"); self.assertIsNotNone(info)
-        for i in range(20): (managed_root(self.home)/f"fd-{i}").rmdir()
+    def test_F04_partial_audit_write_is_rolled_back_before_failure_record(self):
+        real_write=os.write; calls={"count":0}
+        def partial_then_fail(fd,data):
+            calls["count"]+=1
+            if calls["count"]==1:
+                return real_write(fd,data[:max(1,len(data)//2)])
+            if calls["count"]==2:
+                raise OSError(errno.EIO,"injected mid-record failure")
+            return real_write(fd,data)
+        with mock.patch("wine_ai.bottle_manager.create.os.write",side_effect=partial_then_fail):
+            info,evidence=self.call_create("audit-rollback")
+        self.assertIsNone(info); self.assertEqual(evidence[0].status,EvidenceStatus.BLOCKED)
+        records=self.audit_records()
+        self.assertEqual(len(records),1)
+        self.assertEqual(records[0]["outcome"],"BLOCKED")
+        self.assertFalse((managed_root(self.home)/"audit-rollback").exists())
+
+    def test_G03_all_opened_and_duplicated_descriptors_are_closed(self):
+        opened=set(); closed=set()
+        real_open=os.open; real_dup=os.dup; real_close=os.close
+        def track_open(*args,**kwargs):
+            fd=real_open(*args,**kwargs); opened.add(fd); return fd
+        def track_dup(fd):
+            duplicate=real_dup(fd); opened.add(duplicate); return duplicate
+        def track_close(fd):
+            if fd in opened: closed.add(fd)
+            return real_close(fd)
+        with mock.patch("wine_ai.bottle_manager.create.os.open",side_effect=track_open), \\
+             mock.patch("wine_ai.bottle_manager.create.os.dup",side_effect=track_dup), \\
+             mock.patch("wine_ai.bottle_manager.create.os.close",side_effect=track_close):
+            info,_=self.call_create("fd-check")
+        self.assertIsNotNone(info)
+        self.assertTrue(opened, "test did not observe any descriptors")
+        self.assertEqual(opened,closed, f"descriptor leak(s): {opened-closed}")
+        Path(info["path"]).rmdir()
 
 if __name__=="__main__": unittest.main()
