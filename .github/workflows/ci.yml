@@ -47,17 +47,22 @@ jobs:
         if: failure()
         run: |
           {
-            echo "unittest failure diagnosis (py ${{ matrix.python-version }}) run ${{ github.run_id }}"
-            echo '```text'
-            grep -E "^(FAIL|ERROR):|^Ran |^OK|^FAILED" /tmp/unittest.log | head -60
-            echo '--- tail ---'
-            tail -n 300 /tmp/unittest.log
-            echo '```'
+            echo "FAIL/ERROR lines:"
+            grep -E "^(FAIL|ERROR):" /tmp/unittest.log | head -60
+            echo "summary:"
+            grep -E "^(Ran |OK|FAILED)" /tmp/unittest.log | tail -3
+            echo "first traceback:"
+            awk '/^={20,}$/{f=1} f{print; n++} n>50{exit}' /tmp/unittest.log
           } > diag.txt
-          URL1=$(curl -s --max-time 30 --data-binary @diag.txt https://paste.rs || true)
-          URL2=$(curl -s --max-time 30 -F "file=@diag.txt" https://0x0.st || true)
-          URL3=$(curl -s --max-time 30 -F "content=<diag.txt" https://dpaste.com/api/v2/ || true)
-          echo "url1=$URL1 url2=$URL2 url3=$URL3"
-          echo "::error title=ci-diag-$PYVER::$URL1 | $URL2 | $URL3"
-        env:
-          PYVER: ${{ matrix.python-version }}
+          # URL-encode and chunk the diagnosis into annotations
+          ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote(open('diag.txt').read()[:14000]))")
+          TOTAL=$(( ( ${#ENC} + 899 ) / 900 ))
+          echo "::error title=diag-meta::len=${#ENC} chunks=$TOTAL"
+          i=0
+          offset=0
+          while [ $offset -lt ${#ENC} ]; do
+            i=$((i+1))
+            part=$(python3 -c "print('$ENC'[$offset:$offset+900])")
+            echo "::error title=diag-$i-of-$TOTAL::$part"
+            offset=$((offset+900))
+          done
