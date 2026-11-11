@@ -124,5 +124,9 @@ implementing commits were authored (2026-11-11 here). The erroneous
   **270 tests, all passing** (was 262; +3 exec-contract tests,
   +4 prefix-hash property tests, +1 export-exclusion test, 2 updated).
 - Secret scan: clean. No new dependency (`hmac` is stdlib). No network.
-- CI on the head of this round: GitHub Actions, to be recorded in
-  `docs/reviews/EXTERNAL_REVIEWS.md` §10 after the push.
+- CI on the head of this round `b4e3aaab15ad`: PROVEN — run
+  `43064711529` on GitHub Actions completed `success`
+  (https://github.com/DrAbdulmalek/wine-ai-adaptive/actions/runs/43064711529) (Python 3.11/3.12/3.13, `pull_request` event;
+  status and PR-head match verified via API). The documentation
+  commit recording this line follows that run (docs-only, per
+  the established round pattern).
