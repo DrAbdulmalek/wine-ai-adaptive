@@ -3,14 +3,14 @@
 Recipes are data only. This module never initializes Wine, invokes
 winetricks, launches subprocesses, or executes recipe steps.
 
-Evidence discipline: a recipe file cannot claim PROVEN, and neither can
-``recipe_finding``. The only path that may emit a PROVEN finding is
-``record_test_outcome``, which requires a complete, structured test
-record (application version, Wine version, environment, tests
-performed, evidence reference, and test date). The evidence reference
-itself cannot be stored in the current schema (v4 has no free-text
-column); callers must retain the referenced report and the store row
-serves as the structured outcome marker only.
+Evidence discipline: recipe metadata and caller-supplied fields are not
+proof. Neither ``recipe_finding`` nor ``record_test_outcome`` may emit
+PROVEN. The current project has no trusted evidence-verification or
+attestation mechanism, and the KnowledgeStore schema has no field for a
+verifiable evidence binding. Recipe outcomes therefore remain
+UNPROVEN, PARTIALLY_PROVEN, or CONTRADICTED until such a mechanism is
+designed and independently reviewed. The generic persistence bridge
+also refuses PROVEN records.
 '''
 
 import json
@@ -281,11 +281,13 @@ def record_test_outcome(
     evidence_reference,
     test_date,
 ):
-    '''Record a structured compatibility test outcome for a recipe.
+    '''Validate a structured test observation without asserting PROVEN.
 
-    This is the only path in the recipe layer that may emit a PROVEN
-    finding, and it requires a complete, independently reviewable test
-    record:
+    This function deliberately refuses PROVEN. The required metadata is
+    useful for describing an observation, but caller-supplied labels and
+    references do not establish that a report exists, is authentic, or
+    corresponds to the claimed test. A trusted verifier and a durable
+    evidence binding must be implemented before PROVEN can be emitted:
 
     - ``app_version``: tested application version (SAFE_LABEL).
     - ``wine_version``: tested Wine version (SAFE_LABEL); it is also
@@ -302,6 +304,11 @@ def record_test_outcome(
     '''
     name = _validated_recipe_name(recipe)
     status_value = _validated_evidence_status(status)
+    if status_value == EvidenceStatus.PROVEN.value:
+        raise ValueError(
+            'PROVEN is disabled: no trusted evidence verifier or '
+            'attestation binding is implemented'
+        )
     if not isinstance(confidence, str) or confidence not in ALLOWED_CONFIDENCE:
         raise ValueError('Unsupported confidence')
 
