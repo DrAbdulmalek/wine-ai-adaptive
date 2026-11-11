@@ -32,7 +32,7 @@ For invalid or rejected requests, no Bottle and no entry under `prefixes/` may b
 
 ## Test mapping
 
-`tests/unit/test_bottle_create_security.py` uses stdlib `unittest` and temporary directories only. It covers validation, confinement, symlinks, protected-root aliasing, pre-existing targets, ownership/mode/type, cleanup, audit success/failure/privacy, partial-write rollback, no external execution, and descriptor open/close accounting.
+`tests/unit/test_bottle_create_security.py` uses stdlib `unittest` and temporary directories only. It covers validation, confinement, symlinks, protected-root aliasing, pre-existing targets, ownership/mode/type, cleanup, audit success/failure/privacy, partial-write rollback, no external execution, descriptor accounting, concurrent same-name creation, concurrent JSONL appends, and Create→Discovery integration. A same-UID namespace swap between mkdir and open is retained as an explicit expected-failure characterization: it records the known residual TOCTOU boundary rather than claiming the current implementation defeats a malicious process sharing the same UID.
 
 ## Review gates
 

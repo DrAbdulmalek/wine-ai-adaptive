@@ -211,3 +211,95 @@ class CreateBottleSecurityTests(unittest.TestCase):
         Path(info["path"]).rmdir()
 
 if __name__=="__main__": unittest.main()
+
+
+    def test_H01_concurrent_same_name_creates_at_most_one_bottle(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        barrier = Barrier(2)
+
+        def worker():
+            barrier.wait(timeout=5)
+            return create_bottle("same-name")
+
+        with mock.patch("wine_ai.bottle_manager.create.Path.home", return_value=self.home):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _index: worker(), range(2)))
+
+        successes = [item for item, _evidence in results if item is not None]
+        blocked = [evidence for item, evidence in results if item is None]
+        self.assertEqual(len(successes), 1, results)
+        self.assertEqual(len(blocked), 1, results)
+        self.assertEqual(blocked[0][0].status, EvidenceStatus.BLOCKED)
+        self.assertTrue((managed_root(self.home) / "same-name").is_dir())
+        self.assertEqual(len(self.audit_records()), 2)
+        (managed_root(self.home) / "same-name").rmdir()
+
+    def test_H02_concurrent_audit_appends_remain_individual_jsonl_records(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        count = 8
+        barrier = Barrier(count)
+
+        def worker(index):
+            barrier.wait(timeout=10)
+            return create_bottle(f"parallel-{index}")
+
+        with mock.patch("wine_ai.bottle_manager.create.Path.home", return_value=self.home):
+            with ThreadPoolExecutor(max_workers=count) as pool:
+                results = list(pool.map(worker, range(count)))
+
+        self.assertTrue(all(item is not None for item, _evidence in results), results)
+        records = self.audit_records()
+        self.assertEqual(len(records), count)
+        self.assertEqual({record["name"] for record in records},
+                         {f"parallel-{index}" for index in range(count)})
+        self.assertTrue(all(record["outcome"] == "PROVEN" for record in records))
+        for item, _evidence in results:
+            Path(item["path"]).rmdir()
+
+    def test_H03_empty_created_bottle_is_not_discovered_as_wine_prefix(self):
+        from wine_ai.bottle_manager.discovery import discover_prefixes
+        info, _evidence = self.call_create("empty-not-prefix")
+        self.assertIsNotNone(info)
+        discovered, discovery_evidence = discover_prefixes(home=self.home)
+        self.assertNotIn("empty-not-prefix", {item["name"] for item in discovered})
+        self.assertTrue(any(
+            item.status == EvidenceStatus.UNPROVEN
+            and "missing markers" in item.message.lower()
+            for item in discovery_evidence
+        ), discovery_evidence)
+        Path(info["path"]).rmdir()
+
+    @unittest.expectedFailure
+    def test_H04_same_uid_swap_between_mkdir_and_open_is_rejected(self):
+        # Characterization test for the documented same-UID TOCTOU boundary.
+        # It remains an expected failure until the implementation can bind
+        # mkdir's result to the subsequently opened descriptor without
+        # trusting the mutable directory entry.
+        real_mkdir = os.mkdir
+        swapped = {"done": False}
+
+        def swap_after_target_mkdir(name, mode=0o777, *, dir_fd=None):
+            result = real_mkdir(name, mode, dir_fd=dir_fd)
+            if name == "race-swap" and not swapped["done"]:
+                swapped["done"] = True
+                os.rename(name, "displaced-race-swap",
+                          src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                real_mkdir(name, mode, dir_fd=dir_fd)
+            return result
+
+        with mock.patch("wine_ai.bottle_manager.create.Path.home", return_value=self.home):
+            with mock.patch("wine_ai.bottle_manager.create.os.mkdir",
+                            side_effect=swap_after_target_mkdir):
+                info, _evidence = create_bottle("race-swap")
+        try:
+            # Current code accepts the replacement; expectedFailure keeps this
+            # known residual visible instead of claiming the race is defeated.
+            self.assertIsNone(info)
+        finally:
+            root = managed_root(self.home)
+            for name in ("race-swap", "displaced-race-swap"):
+                target = root / name
+                if target.is_dir() and not target.is_symlink():
+                    target.rmdir()
