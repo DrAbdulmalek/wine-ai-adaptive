@@ -19,7 +19,7 @@ allow. It must never include:
 {
   "format": "wine-ai-adaptive.export",
   "package_version": 1,
-  "schema_version": 3,
+  "schema_version": 4,
   "exported_at": "2026-11",
   "record_count": 2,
   "includes_prefix_id": false,
@@ -57,6 +57,12 @@ accepted only for `created_at_ym`), and `includes_prefix_id` /
 `includes_time` must be booleans. `schema_version` must match the
 current store schema exactly; packages exported by older releases fail
 closed.
+
+Note (schema v4): the store now carries two further local-only columns,
+`launcher` and `prefix_hash`. They are **never** exported: packages
+keep the exact field set above, so packages produced by v0.2.0 remain
+byte-compatible with the same `package_version`, and `prefix_hash` — a
+pseudonym of a local path — never leaves the machine.
 
 ## Export
 

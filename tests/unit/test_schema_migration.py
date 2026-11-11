@@ -198,6 +198,8 @@ class SchemaMigrationTests(unittest.TestCase):
                 "gpu_vendor",
                 "error_code",
                 "prefix_id",
+                "launcher",
+                "prefix_hash",
             },
         )
         self.assertIsNone(records[0]["error_code"])

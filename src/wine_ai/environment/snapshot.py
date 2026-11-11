@@ -6,11 +6,14 @@ winetop, reimplemented from scratch with the standard library only.
 The collector is strictly read-only: it never modifies anything, never
 reads personal files, and never stores full prefix paths. The prefix is
 reduced to an abstract display name (its base name), which is the only
-value safe enough to persist as ``prefix_id``.
+value safe enough to persist as ``prefix_id``, plus a truncated SHA-256
+pseudonym of the absolute path (``prefix_hash``) which enables
+cross-session correlation without ever storing the path itself.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -29,7 +32,15 @@ LAUNCHER_MARKERS = {
     "steam": ("SteamAppId", "STEAM_COMPAT_DATA_PATH"),
 }
 
-LAUNCHERS = ("lutris", "bottles", "heroic", "steam", "unknown")
+LAUNCHERS = ("lutris", "bottles", "heroic", "steam", "wine", "unknown")
+
+# A bare Wine session (WINEPREFIX set, no launcher marker) is reported
+# as the explicit "wine" launcher value instead of collapsing into the
+# not-detected "unknown" value.
+BARE_WINE_LAUNCHER = "wine"
+
+# Length of the truncated SHA-256 prefix pseudonym (hex characters).
+PREFIX_HASH_CHARS = 16
 
 OS_RELEASE_PATH = Path("/etc/os-release")
 
@@ -42,8 +53,9 @@ class EnvironmentSnapshot:
 
     wine_version: str          # e.g. "11.19" or "unknown"
     prefix_name: str           # abstract base name, never a full path
-    launcher: str              # lutris | bottles | heroic | steam | unknown
+    launcher: str              # lutris | bottles | heroic | steam | wine | unknown
     distro: str                # os-release ID only, e.g. "manjaro"
+    prefix_hash: Optional[str] = None  # truncated SHA-256 of the abs path
 
     def __post_init__(self):
         for field_name in ("wine_version", "prefix_name", "distro"):
@@ -66,22 +78,40 @@ class EnvironmentSnapshot:
             return None
         return self.prefix_name
 
+    def to_launcher(self) -> Optional[str]:
+        """Allow-listed launcher name for store records, or None."""
+        if self.launcher == "unknown":
+            return None
+        return self.launcher
+
+    def to_prefix_hash(self) -> Optional[str]:
+        """Prefix path pseudonym, or None when unknown."""
+        return self.prefix_hash
+
     def to_dict(self) -> dict:
         return {
             "wine_version": self.wine_version,
             "prefix_name": self.prefix_name,
             "launcher": self.launcher,
             "distro": self.distro,
+            "prefix_hash": self.prefix_hash,
         }
 
 
-def detect_launcher(env: Mapping[str, str]) -> str:
+def detect_launcher(
+    env: Mapping[str, str], *, prefix_declared: bool = False,
+) -> str:
     """Detect the launcher from environment variable names only.
 
     Values are deliberately not inspected: names alone identify the
     launcher and avoid copying any user data. Markers ending with an
     underscore match any variable name *starting* with them (e.g.
     ``BOTTLES_`` covers ``BOTTLES_ENV``).
+
+    ``prefix_declared`` reports that a Wine prefix is in use (e.g.
+    ``WINEPREFIX`` is set): a session without any launcher marker is
+    then the explicit bare-Wine value ``"wine"`` instead of the
+    not-detected value ``"unknown"``.
     """
     if not isinstance(env, Mapping):
         raise ValueError("env must be a mapping")
@@ -93,7 +123,27 @@ def detect_launcher(env: Mapping[str, str]) -> str:
                     return name
             elif marker in keys:
                 return name
+    if prefix_declared:
+        return BARE_WINE_LAUNCHER
     return "unknown"
+
+
+def prefix_hash_of(prefix_path: str) -> Optional[str]:
+    """Truncated SHA-256 pseudonym of a prefix path, or None.
+
+    The absolute path is hashed, never stored: 16 lowercase hex
+    characters are enough for correlation across sessions while
+    revealing nothing about directory names or users. The input is
+    never kept in memory beyond this call.
+    """
+    if not isinstance(prefix_path, str) or not prefix_path.strip():
+        return None
+    try:
+        absolute = os.path.abspath(prefix_path)
+    except (OSError, ValueError):
+        return None
+    digest = hashlib.sha256(absolute.encode("utf-8", "replace")).hexdigest()
+    return digest[:PREFIX_HASH_CHARS]
 
 
 def parse_wine_version(text: str) -> Optional[str]:
@@ -152,12 +202,18 @@ def collect(
     """Collect a structured snapshot of the current environment.
 
     ``prefix_path`` is reduced to its base name before anything is
-    stored; the full path is never kept in memory beyond this call.
+    stored; the full path is never kept in memory beyond this call. A
+    truncated SHA-256 pseudonym of the absolute path is kept as
+    ``prefix_hash`` for cross-session correlation without ever storing
+    the path itself.
     """
     env = env if env is not None else os.environ
 
     wine_version = detect_wine_version(env) or "unknown"
-    launcher = detect_launcher(env)
+    prefix_declared = bool(
+        isinstance(env, Mapping) and env.get("WINEPREFIX", "").strip()
+    ) or bool(prefix_path)
+    launcher = detect_launcher(env, prefix_declared=prefix_declared)
     distro = distro_name()
 
     if prefix_path:
@@ -170,4 +226,5 @@ def collect(
         prefix_name=prefix_name,
         launcher=launcher,
         distro=distro,
+        prefix_hash=prefix_hash_of(prefix_path) if prefix_path else None,
     )

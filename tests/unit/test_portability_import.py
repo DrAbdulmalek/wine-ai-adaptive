@@ -241,7 +241,7 @@ class ImportTests(unittest.TestCase):
 
     def test_prepare_record_contract(self):
         # portability relies on KnowledgeStore._prepare_record: pin the
-        # contract (staticmethod, accepts a dict, returns the 9-value
+        # contract (staticmethod, accepts a dict, returns the 11-value
         # insert tuple, raises ValueError on any violation) so a silent
         # upstream change cannot break import validation.
         attr = inspect.getattr_static(KnowledgeStore, "_prepare_record")
@@ -249,7 +249,7 @@ class ImportTests(unittest.TestCase):
 
         prepared = KnowledgeStore._prepare_record(_valid_record())
         self.assertIsInstance(prepared, tuple)
-        self.assertEqual(len(prepared), 9)
+        self.assertEqual(len(prepared), 11)
 
         with self.assertRaises(ValueError):
             KnowledgeStore._prepare_record("not-a-dict")

@@ -32,11 +32,16 @@ Security properties implemented here:
   instead of exporting unstructured data.
 - Schema version 2 added two optional columns (``error_code`` and
   ``prefix_id``). Version 3 rebuilds the table with full ``CHECK``
-  coverage. Version 1 and version 2 databases are upgraded by atomic
+  coverage. Version 4 adds two further optional columns with their own
+  ``CHECK`` coverage: ``launcher`` (an allow-listed launcher name, never
+  a path) and ``prefix_hash`` (a truncated SHA-256 pseudonym of the
+  prefix path — privacy-preserving by construction: the raw path is
+  never stored). Version 1, 2 and 3 databases are upgraded by atomic
   migrations whose pre-checks (stored CREATE statement and column
   set) run *inside* the same ``BEGIN IMMEDIATE`` transaction as the
   migration itself; any mismatch or error rolls back and leaves the
-  database untouched.
+  database untouched. The canonical schema is tracked in
+  ``docs/decisions/2026-11-12-schema-canonical-v3-v4.md``.
 
 Documented limitations (these are NOT fully eliminated):
 
@@ -60,7 +65,8 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+SCHEMA_VERSION_V3 = 3
 SCHEMA_VERSION_V2 = 2
 MAX_BATCH_SIZE = 100
 
@@ -83,14 +89,25 @@ EVIDENCE_STATUSES = {
 CONFIDENCE_LEVELS = {"low", "medium", "high"}
 GPU_VENDORS = {"intel", "amd", "nvidia", "unknown"}
 
+# Launcher names are abstract categorical labels (never paths, never
+# version strings). ``unknown`` is the explicit "not detected" value.
+LAUNCHERS = frozenset({
+    "lutris", "bottles", "heroic", "steam", "wine", "unknown",
+})
+
 SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+ -]{0,63}$")
+
+# Prefix pseudonym: lowercase hexadecimal, 16..64 chars (a truncated
+# SHA-256 digest produced by the environment layer; the raw prefix
+# path is never accepted here).
+SAFE_HASH = re.compile(r"^[a-f0-9]{16,64}$")
 
 TABLE_NAME = "diagnostic_records"
 
 # Sidecar files SQLite can place next to the database file.
 SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
-# Canonical schema (version 3). The sqlite_master SQL stored by
+# Canonical schema (version 4). The sqlite_master SQL stored by
 # databases created by this library matches this text after whitespace
 # normalization (SQLite strips "IF NOT EXISTS" when storing the
 # statement). Any other definition is refused as incompatible.
@@ -99,6 +116,74 @@ SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 # database engine itself is the last line of defense: values written
 # through a raw SQLite connection are enforced without this API.
 EXPECTED_TABLE_SQL = """
+CREATE TABLE diagnostic_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    wine_version TEXT NOT NULL,
+    distro TEXT NOT NULL,
+    error_category TEXT NOT NULL,
+    evidence_status TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    gpu_vendor TEXT NOT NULL,
+    error_code TEXT,
+    prefix_id TEXT,
+    launcher TEXT,
+    prefix_hash TEXT,
+    CHECK (error_category IN (
+        'missing_module',
+        'graphics',
+        'memory',
+        'startup',
+        'unknown'
+    )),
+    CHECK (evidence_status IN (
+        'PROVEN',
+        'PARTIALLY_PROVEN',
+        'UNPROVEN',
+        'CONTRADICTED',
+        'BLOCKED'
+    )),
+    CHECK (confidence IN (
+        'low', 'medium', 'high'
+    )),
+    CHECK (gpu_vendor IN (
+        'intel', 'amd', 'nvidia', 'unknown'
+    )),
+    CHECK (launcher IS NULL OR launcher IN (
+        'lutris', 'bottles', 'heroic', 'steam', 'wine', 'unknown'
+    )),
+    CHECK (prefix_hash IS NULL OR (
+        length(prefix_hash) BETWEEN 16 AND 64
+        AND prefix_hash NOT GLOB '*[^0-9a-f]*'
+    )),
+    CHECK (length(wine_version) BETWEEN 1 AND 64
+        AND substr(wine_version, 1, 1) GLOB '[A-Za-z0-9]'
+        AND wine_version NOT GLOB '*[^A-Za-z0-9._+ -]*'
+        AND wine_version = trim(wine_version)),
+    CHECK (length(distro) BETWEEN 1 AND 64
+        AND substr(distro, 1, 1) GLOB '[A-Za-z0-9]'
+        AND distro NOT GLOB '*[^A-Za-z0-9._+ -]*'
+        AND distro = trim(distro)),
+    CHECK (prefix_id IS NULL OR (
+        length(prefix_id) BETWEEN 1 AND 64
+        AND substr(prefix_id, 1, 1) GLOB '[A-Za-z0-9]'
+        AND prefix_id NOT GLOB '*[^A-Za-z0-9._+ -]*'
+        AND prefix_id = trim(prefix_id))),
+    CHECK (error_code IS NULL OR (
+        (substr(error_code, 1, 2) = '0x'
+            AND length(error_code) BETWEEN 3 AND 10
+            AND substr(error_code, 3) NOT GLOB '*[^0-9A-F]*')
+        OR (length(error_code) BETWEEN 2 AND 64
+            AND substr(error_code, 1, 1) GLOB '[A-Z]'
+            AND error_code NOT GLOB '*[^A-Z0-9_]*')
+    ))
+)
+"""
+
+# Version 3 canonical schema. Databases stamped with version 3 carry
+# this stored CREATE statement; they are upgraded to version 4 by an
+# atomic table rebuild (same pattern as the v2 -> v3 migration).
+EXPECTED_TABLE_SQL_V3 = """
 CREATE TABLE diagnostic_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -241,6 +326,24 @@ EXPECTED_COLUMNS = {
     "gpu_vendor": ("TEXT", True, False),
     "error_code": ("TEXT", False, False),
     "prefix_id": ("TEXT", False, False),
+    "launcher": ("TEXT", False, False),
+    "prefix_hash": ("TEXT", False, False),
+}
+
+# Version 3 columns (the v3 -> v4 migration pre-check requires exactly
+# this set before touching a version 3 database). Version 2 databases
+# carry the same column set (their SQL differs only in CHECK coverage).
+EXPECTED_COLUMNS_V3 = {
+    "id": ("INTEGER", False, True),
+    "created_at": ("TEXT", True, False),
+    "wine_version": ("TEXT", True, False),
+    "distro": ("TEXT", True, False),
+    "error_category": ("TEXT", True, False),
+    "evidence_status": ("TEXT", True, False),
+    "confidence": ("TEXT", True, False),
+    "gpu_vendor": ("TEXT", True, False),
+    "error_code": ("TEXT", False, False),
+    "prefix_id": ("TEXT", False, False),
 }
 
 # Version 1 columns (the migration pre-check requires exactly this set
@@ -278,6 +381,8 @@ STORED_RECORD_COLUMNS = frozenset({
     "gpu_vendor",
     "error_code",
     "prefix_id",
+    "launcher",
+    "prefix_hash",
 })
 
 _ISO_TIMESTAMP = re.compile(
@@ -608,6 +713,7 @@ class KnowledgeStore:
 
         expected_sql_by_version = {
             SCHEMA_VERSION: EXPECTED_TABLE_SQL,
+            SCHEMA_VERSION_V3: EXPECTED_TABLE_SQL_V3,
             SCHEMA_VERSION_V2: EXPECTED_TABLE_SQL_V2,
             1: EXPECTED_TABLE_SQL_V1,
         }
@@ -633,7 +739,11 @@ class KnowledgeStore:
             )
 
         expected_columns = (
-            EXPECTED_COLUMNS_V1 if version == 1 else EXPECTED_COLUMNS
+            EXPECTED_COLUMNS_V1 if version == 1 else (
+                EXPECTED_COLUMNS_V3
+                if version in (SCHEMA_VERSION_V2, SCHEMA_VERSION_V3)
+                else EXPECTED_COLUMNS
+            )
         )
         actual = KnowledgeStore._read_columns(connection)
         if set(actual) != set(expected_columns):
@@ -733,7 +843,7 @@ class KnowledgeStore:
                 )
 
             actual = self._read_columns(connection)
-            if set(actual) != set(EXPECTED_COLUMNS):
+            if set(actual) != set(EXPECTED_COLUMNS_V3):
                 raise KnowledgeStoreError(
                     "Schema migration failed: incompatible column set"
                 )
@@ -742,7 +852,7 @@ class KnowledgeStore:
             connection.execute(
                 f"ALTER TABLE {TABLE_NAME} RENAME TO {backup_name}"
             )
-            connection.execute(EXPECTED_TABLE_SQL)
+            connection.execute(EXPECTED_TABLE_SQL_V3)
             connection.execute(f"""
                 INSERT INTO {TABLE_NAME} (
                     id,
@@ -771,6 +881,92 @@ class KnowledgeStore:
             """)
             connection.execute(f"DROP TABLE {backup_name}")
             connection.execute(
+                f"PRAGMA user_version = {SCHEMA_VERSION_V3}"
+            )
+            connection.commit()
+        except Exception as exc:
+            connection.rollback()
+            raise KnowledgeStoreError(
+                "Schema migration failed: database left unchanged"
+            ) from exc
+
+    def _migrate_v3_to_v4(self, connection):
+        """Atomically upgrade a verified version 3 database to version 4.
+
+        Same rebuild pattern as v2 -> v3: SQLite cannot add a CHECK
+        constraint to an existing table, so the upgrade rebuilds it —
+        rename the old table, create the canonical version 4 definition,
+        copy every row (the two new columns start out NULL for migrated
+        rows), drop the backup, and stamp version 4 — all inside one
+        ``BEGIN IMMEDIATE`` transaction whose pre-checks (stored SQL
+        fingerprint against the canonical version 3 statement and the
+        version 3 column set) also run inside the transaction.
+
+        Any failure rolls the migration back and leaves the database on
+        version 3, unchanged. Fail closed by design.
+        """
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = ?",
+                (TABLE_NAME,),
+            ).fetchone()
+            if row is None or not row[0]:
+                raise KnowledgeStoreError(
+                    "Schema migration failed: table is missing"
+                )
+            if _normalize_sql(row[0]) != _normalize_sql(
+                EXPECTED_TABLE_SQL_V3
+            ):
+                raise KnowledgeStoreError(
+                    "Schema migration failed: incompatible table definition"
+                )
+
+            actual = self._read_columns(connection)
+            if set(actual) != set(EXPECTED_COLUMNS_V3):
+                raise KnowledgeStoreError(
+                    "Schema migration failed: incompatible column set"
+                )
+
+            backup_name = f"{TABLE_NAME}_v3_backup"
+            connection.execute(
+                f"ALTER TABLE {TABLE_NAME} RENAME TO {backup_name}"
+            )
+            connection.execute(EXPECTED_TABLE_SQL)
+            connection.execute(f"""
+                INSERT INTO {TABLE_NAME} (
+                    id,
+                    created_at,
+                    wine_version,
+                    distro,
+                    error_category,
+                    evidence_status,
+                    confidence,
+                    gpu_vendor,
+                    error_code,
+                    prefix_id,
+                    launcher,
+                    prefix_hash
+                )
+                SELECT
+                    id,
+                    created_at,
+                    wine_version,
+                    distro,
+                    error_category,
+                    evidence_status,
+                    confidence,
+                    gpu_vendor,
+                    error_code,
+                    prefix_id,
+                    NULL,
+                    NULL
+                FROM {backup_name}
+            """)
+            connection.execute(f"DROP TABLE {backup_name}")
+            connection.execute(
                 f"PRAGMA user_version = {SCHEMA_VERSION}"
             )
             connection.commit()
@@ -790,7 +986,8 @@ class KnowledgeStore:
                 "PRAGMA user_version"
             ).fetchone()[0]
 
-            if version not in (0, 1, SCHEMA_VERSION_V2, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION_V2, SCHEMA_VERSION_V3,
+                               SCHEMA_VERSION):
                 raise KnowledgeStoreError(
                     f"Unsupported database schema version: {version}"
                 )
@@ -805,6 +1002,7 @@ class KnowledgeStore:
             if version in (
                 1,
                 SCHEMA_VERSION_V2,
+                SCHEMA_VERSION_V3,
                 SCHEMA_VERSION,
             ) and not table_exists:
                 raise KnowledgeStoreError(
@@ -826,8 +1024,12 @@ class KnowledgeStore:
             elif version == 1:
                 self._migrate_v1_to_v2(connection)
                 self._migrate_v2_to_v3(connection)
+                self._migrate_v3_to_v4(connection)
             elif version == SCHEMA_VERSION_V2:
                 self._migrate_v2_to_v3(connection)
+                self._migrate_v3_to_v4(connection)
+            elif version == SCHEMA_VERSION_V3:
+                self._migrate_v3_to_v4(connection)
 
             self._verify_schema(connection)
         finally:
@@ -851,6 +1053,8 @@ class KnowledgeStore:
             "gpu_vendor",
             "error_code",
             "prefix_id",
+            "launcher",
+            "prefix_hash",
         }
 
         if set(record) - allowed_keys:
@@ -901,6 +1105,16 @@ class KnowledgeStore:
         if prefix_id is not None:
             prefix_id = _validate_label(prefix_id, "prefix_id")
 
+        launcher = record.get("launcher")
+        if launcher is not None:
+            launcher = _validate_choice(launcher, LAUNCHERS, "launcher")
+
+        prefix_hash = record.get("prefix_hash")
+        if prefix_hash is not None:
+            if (not isinstance(prefix_hash, str)
+                    or not SAFE_HASH.fullmatch(prefix_hash)):
+                raise ValueError("Invalid prefix_hash")
+
         created_at = datetime.now(
             timezone.utc
         ).isoformat(timespec="seconds")
@@ -915,6 +1129,8 @@ class KnowledgeStore:
             gpu_vendor,
             error_code,
             prefix_id,
+            launcher,
+            prefix_hash,
         )
 
     def add_records_atomic(self, records):
@@ -950,9 +1166,11 @@ class KnowledgeStore:
                             confidence,
                             gpu_vendor,
                             error_code,
-                            prefix_id
+                            prefix_id,
+                            launcher,
+                            prefix_hash
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, values)
 
                     record_ids.append(cursor.lastrowid)
@@ -972,6 +1190,8 @@ class KnowledgeStore:
         gpu_vendor="unknown",
         error_code=None,
         prefix_id=None,
+        launcher=None,
+        prefix_hash=None,
     ):
         record_ids = self.add_records_atomic([{
             "wine_version": wine_version,
@@ -982,6 +1202,8 @@ class KnowledgeStore:
             "gpu_vendor": gpu_vendor,
             "error_code": error_code,
             "prefix_id": prefix_id,
+            "launcher": launcher,
+            "prefix_hash": prefix_hash,
         }])
 
         return record_ids[0]
@@ -996,7 +1218,9 @@ class KnowledgeStore:
                 confidence,
                 gpu_vendor,
                 error_code,
-                prefix_id
+                prefix_id,
+                launcher,
+                prefix_hash
     """
 
     def _query_records(self, clause, parameter, limit):
@@ -1060,6 +1284,11 @@ class KnowledgeStore:
         """Records carrying a specific structured error code."""
         normalized = normalize_error_code(error_code)
         return self._query_records("error_code = ?", normalized, limit)
+
+    def find_by_launcher(self, launcher, limit=QUERY_LIMIT_DEFAULT):
+        """Records attributed to an allow-listed launcher name."""
+        _validate_choice(launcher, LAUNCHERS, "launcher")
+        return self._query_records("launcher = ?", launcher, limit)
 
     def category_counts(self):
         """Record counts grouped by error category (all categories)."""

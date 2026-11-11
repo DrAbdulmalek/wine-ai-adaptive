@@ -359,6 +359,110 @@ class KnowledgeBridgeStructuredFieldsTests(unittest.TestCase):
         records = self.store.list_records()
         self.assertEqual(records[0]["prefix_id"], "game-1234")
 
+    # -- schema v4 fields (launcher / prefix_hash) ------------------------
+
+    def test_persists_launcher_and_prefix_hash_from_batch(self):
+        persist_findings(
+            self.store,
+            [self.finding()],
+            wine_version="11.19",
+            distro="Manjaro",
+            launcher="steam",
+            prefix_hash="0123456789abcdef0123456789abcdef",
+        )
+        record = self.store.list_records()[0]
+        self.assertEqual(record["launcher"], "steam")
+        self.assertEqual(
+            record["prefix_hash"], "0123456789abcdef0123456789abcdef"
+        )
+
+    def test_finding_level_launcher_overrides_batch(self):
+        findings = [
+            {"category": "graphics", "launcher": "lutris"},
+            {"category": "memory"},
+        ]
+        persist_findings(
+            self.store,
+            findings,
+            wine_version="11.19",
+            distro="Manjaro",
+            launcher="steam",
+        )
+        records = self.store.list_records()
+        by_category = {r["error_category"]: r for r in records}
+        self.assertEqual(by_category["graphics"]["launcher"], "lutris")
+        self.assertEqual(by_category["memory"]["launcher"], "steam")
+
+    def test_error_category_key_wins_over_category(self):
+        # The structured key ``error_category`` takes precedence over
+        # the legacy ``category`` key (parser/bridge contract fix).
+        persist_findings(
+            self.store,
+            [{"category": "graphics", "error_category": "memory"}],
+            wine_version="11.19",
+            distro="Manjaro",
+        )
+        self.assertEqual(
+            self.store.list_records()[0]["error_category"], "memory"
+        )
+
+    def test_error_category_key_alone_is_accepted(self):
+        # External parser output uses the structured key only.
+        persist_findings(
+            self.store,
+            [{"error_category": "missing_module"}],
+            wine_version="11.19",
+            distro="Manjaro",
+        )
+        self.assertEqual(
+            self.store.list_records()[0]["error_category"], "missing_module"
+        )
+
+    def test_unrecognized_error_category_is_normalized(self):
+        persist_findings(
+            self.store,
+            [{"error_category": "novel_category"}],
+            wine_version="11.19",
+            distro="Manjaro",
+        )
+        self.assertEqual(
+            self.store.list_records()[0]["error_category"], "unknown"
+        )
+
+    def test_rejects_invalid_launcher(self):
+        for bad in ("/home/user/.wine", "Steam", 7):
+            with self.assertRaises(ValueError):
+                persist_findings(
+                    self.store,
+                    [self.finding()],
+                    wine_version="11.19",
+                    distro="Manjaro",
+                    launcher=bad,
+                )
+        self.assertEqual(self.store.list_records(), [])
+
+    def test_rejects_invalid_prefix_hash(self):
+        for bad in ("/home/user/.wine", "ABCDEF0123456789", "short"):
+            with self.assertRaises(ValueError):
+                persist_findings(
+                    self.store,
+                    [self.finding()],
+                    wine_version="11.19",
+                    distro="Manjaro",
+                    prefix_hash=bad,
+                )
+        self.assertEqual(self.store.list_records(), [])
+
+    def test_rejects_finding_level_invalid_prefix_hash(self):
+        with self.assertRaises(ValueError):
+            persist_findings(
+                self.store,
+                [{"category": "graphics", "prefix_hash": "/raw/path"}],
+                wine_version="11.19",
+                distro="Manjaro",
+            )
+        self.assertEqual(self.store.list_records(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

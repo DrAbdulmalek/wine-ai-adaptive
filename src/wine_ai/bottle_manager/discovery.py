@@ -263,6 +263,18 @@ def discover_prefixes(
         if info is None:
             return
         if info["path"] in seen:
+            # Protection precedence (P1-D contract): re-discovering the
+            # same path through any source must never lower its
+            # protection status. The default prefix (``~/.wine``) is
+            # therefore still flagged protected when the user happens
+            # to declare it via ``$WINEPREFIX`` first.
+            for existing in results:
+                if (
+                    existing["path"] == info["path"]
+                    and info["protected"]
+                    and not existing["protected"]
+                ):
+                    existing["protected"] = True
             return
         seen.add(info["path"])
         results.append(info)

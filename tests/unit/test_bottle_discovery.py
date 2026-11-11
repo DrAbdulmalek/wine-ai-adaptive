@@ -314,5 +314,94 @@ class InspectPrefixTests(unittest.TestCase):
         )
 
 
+class ProtectionPrecedenceTests(unittest.TestCase):
+    """P1-D contract: re-discovery never lowers protection status."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.env_patcher = mock.patch.dict(os.environ, clear=False)
+        self.env = self.env_patcher.start()
+        self.env.pop("WINEPREFIX", None)
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        self.temp.cleanup()
+
+    def test_wineprefix_equal_to_default_prefix_remains_protected(self):
+        # The user declares $WINEPREFIX pointing at ~/.wine itself:
+        # the first emit records it as an unprotected declaration, and
+        # the default-prefix pass must upgrade it — never the reverse.
+        default_prefix = make_prefix(self.home, ".wine")
+        self.env["WINEPREFIX"] = str(default_prefix)
+
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == ".wine"]
+        self.assertEqual(len(match), 1)
+        self.assertTrue(
+            match[0]["protected"],
+            "re-discovering the default prefix must not lose protection",
+        )
+
+    def test_protection_upgrade_keeps_original_origin(self):
+        # Origin records the first discovery source; the upgrade only
+        # touches the protection flag.
+        default_prefix = make_prefix(self.home, ".wine")
+        self.env["WINEPREFIX"] = str(default_prefix)
+
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == ".wine"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["origin"], "WINEPREFIX")
+        self.assertTrue(match[0]["protected"])
+
+    def test_default_prefix_without_declaration_is_untouched(self):
+        make_prefix(self.home, ".wine")
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == ".wine"]
+        self.assertEqual(len(match), 1)
+        self.assertTrue(match[0]["protected"])
+        self.assertEqual(match[0]["origin"], "default_prefix")
+
+
+class EmptyCandidateTests(unittest.TestCase):
+    """Discovery regression: an empty bottle directory is not a prefix."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.env_patcher = mock.patch.dict(os.environ, clear=False)
+        self.env = self.env_patcher.start()
+        self.env.pop("WINEPREFIX", None)
+
+    def tearDown(self):
+        self.env_patcher.stop()
+        self.temp.cleanup()
+
+    def test_fully_empty_candidate_directory_is_not_a_prefix(self):
+        empty = self.home / "bottle-lab"
+        empty.mkdir()
+        prefixes, evidence = discover_prefixes(
+            home=self.home, candidates=[empty]
+        )
+        match = [p for p in prefixes if p["path"] == str(empty)]
+        self.assertEqual(match, [])
+        # The rejection carries explicit evidence instead of silence.
+        self.assertTrue(evidence)
+
+    def test_uninitialized_bottle_keeps_unknown_architecture(self):
+        # A bottle directory with some markers missing stays UNPROVEN —
+        # never guessed into a valid Wine prefix.
+        stub = self.home / "stub-bottle"
+        stub.mkdir()
+        (stub / "drive_c").mkdir()
+        prefixes, _ = discover_prefixes(
+            home=self.home, candidates=[stub]
+        )
+        match = [p for p in prefixes if p["name"] == "stub-bottle"]
+        # drive_c alone is not enough; the registry files are missing.
+        self.assertEqual(match, [])
+
+
 if __name__ == "__main__":
     unittest.main()

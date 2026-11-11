@@ -127,6 +127,8 @@ class QueryLayerTests(unittest.TestCase):
             "gpu_vendor",
             "error_code",
             "prefix_id",
+            "launcher",
+            "prefix_hash",
         }
         self.assertEqual(set(record), expected_keys)
 

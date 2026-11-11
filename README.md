@@ -9,6 +9,8 @@
 > **النواة الكاملة للمشروع الأصلي:** إلى جانب `KnowledgeStore` المحصّنة تتضمن الحزمة مكونات المشروع المحلي الأصلية: `Evidence`، جرد البيئة، محلل سجلات Wine، فحص توافق كروت الرسوميات عبر Vulkan، مزوّد Ollama المحلي (قراءة جرد فقط، دون إرسال أي prompts)، وجسر `KnowledgeBridge` — كلها offline-first وبمكتبة Python القياسية فقط.
 >
 > **إضافات المراجعة الخارجية (v0.2.0):** استخراج رموز الأخطاء (HRESULT/NTSTATUS/Win32) وتصنيفها من نص السجل دون تخزين أي نص خام، طبقة استعلام للقراءة فقط، ترحيل مخطط ذري إلى v2 مع حقلَي `error_code` و`prefix_id`، لقطات بيئة منظمة (كشف المشغّل: Steam/Lutris/Bottles/Heroic باسم مجرد للبادئة فقط)، ومعرفة ثابتة مُرفقة لربط مورّد GPU بأخطاء الرسوميات الشائعة.
+>
+> **توحيد المخطط (v4):** ترحيل ذري v3→v4 يضيف `launcher` (قائمة سماح مشغّلات) و`prefix_hash` (اسم مستعار SHA-256 مقتطع لمسار البادئة — بلا تخزين مسارات)، مع مفتاح جسر موحّد (`error_category`/`category`)، واستعلام `find_by_launcher`، وأسبقية حماية الاكتشاف (إعادة الاكتشاف لا تُخفض `protected` أبدًا). قرار التوحيد الموثق: `docs/decisions/2026-11-12-schema-canonical-v3-v4.md`.
 
 ## الحدود التشغيلية (Safety boundaries)
 
@@ -89,14 +91,14 @@ wine-ai-adaptive/
 │   ├── evidence.py                  # EvidenceStatus و Evidence
 │   ├── knowledge/
 │   │   ├── __init__.py
-│   │   ├── bridge.py                # جسر persist_findings (مع error_code/prefix_id)
-│   │   └── store.py                 # وحدة KnowledgeStore المحصّنة (مخطط v2 + طبقة استعلام)
+│   │   ├── bridge.py                # جسر persist_findings (error_code/prefix_id/launcher/prefix_hash)
+│   │   └── store.py                 # وحدة KnowledgeStore المحصّنة (مخطط v4 + طبقة استعلام)
 │   ├── diagnostics/
 │   │   ├── log_parser.py            # تصنيف أنماط سجلات Wine
 │   │   └── codes.py                 # استخراج وتصنيف رموز الأخطاء (HRESULT/NTSTATUS/Win32)
 │   ├── environment/
 │   │   ├── inventory.py             # جرد البيئة (قراءة فقط)
-│   │   └── snapshot.py              # لقطات بيئة منظمة (مشغّل/توزيعة/إصدار، باسم بادئة مجرد)
+│   │   └── snapshot.py              # لقطات بيئة منظمة (مشغّل/توزيعة/إصدار، باسم بادئة مجرد + هاش مستعار)
 │   ├── bottle_manager/
 │   │   └── discovery.py             # اكتشاف وفحص بادئات Wine (قراءة فقط — مواصفة الجناح النظيف P0)
 │   ├── gpu_compatibility/
@@ -110,7 +112,8 @@ wine-ai-adaptive/
 │   ├── test_knowledge_store.py       # اختبارات الوحدة
 │   ├── test_knowledge_hardening.py   # اختبارات التحصين
 │   ├── test_knowledge_security.py    # اختبارات أمنية مستقلة (symlink، صلاحيات، مخطط)
-│   ├── test_schema_migration.py      # اختبارات الترحيل الذري v1→v2
+│   ├── test_schema_migration.py      # اختبارات الترحيل الذري v1→v2→v3→v4
+│   ├── test_store_v4_migration.py    # اختبارات انحدار المخطط v4 (إعادة فتح، ids، fail-closed، CHECK)
 │   ├── test_store_queries.py         # اختبارات طبقة الاستعلام
 │   ├── test_knowledge_bridge.py      # اختبارات الجسر
 │   ├── test_error_codes.py           # اختبارات رموز الأخطاء
@@ -225,6 +228,8 @@ python -m unittest discover -s tests/unit -p 'test_*.py' -v
 | `gpu_vendor` | `intel`, `amd`, `nvidia`, `unknown` |
 | `error_code` (اختياري) | `0x` + حتى 8 أرقام سداسية، أو اسم `STATUS_*`/`ERROR_*` بحروف كبيرة وأرقام وشرطات سفلية |
 | `prefix_id` (اختياري) | اسم مجرد للبادئة بنمط آمن (لا مسارات، حتى 64 محرفًا) |
+| `launcher` (اختياري) | اسم مشغّل من قائمة سماح: `lutris`, `bottles`, `heroic`, `steam`, `wine`, `unknown` — بلا مسارات أو إصدارات |
+| `prefix_hash` (اختياري) | اسم مستعار لمسار البادئة: SHA-256 مقتطع إلى 16 محرفًا سداسيًا صغيرًا؛ المسار الخام لا يُقبل ولا يُخزَّن ولا يُصدَّر أبدًا |
 
 حقلا `wine_version` و`distro` نصان حرّان لكنهما يخضعان لنمط آمن يمنع المسارات والرموز الخبيثة (حتى 64 محرفًا).
 
@@ -238,8 +243,8 @@ python -m unittest discover -s tests/unit -p 'test_*.py' -v
 جناح نظيف) موثقة في `docs/CROSSOVER_CLEAN_ROOM_SPEC.md` (القسم 16).
 أبرز البنود:
 
-- [x] طبقة استعلامات وتصفية حسب الفئة وحالة الدليل ورمز الخطأ
-- [x] لقطات بيئة منظمة مرتبطة بالسجلات عبر `prefix_id`
+- [x] طبقة استعلامات وتصفية حسب الفئة وحالة الدليل ورمز الخطأ والمشغّل
+- [x] لقطات بيئة منظمة مرتبطة بالسجلات عبر `prefix_id` و`launcher`/`prefix_hash` (المخطط v4)
 - [x] تصدير واستيراد مجهّل للسجلات للمشاركة بين الأجهزة (واجهة المكتبة مكتملة؛ يتبقى ربط أوامر CLI `export`/`import`)
 - [x] اكتشاف وفحص بادئات Wine للقراءة فقط (`bottle_manager.discovery` + أمر `prefixes` — مرحلة P1 من مواصفة الجناح النظيف)
 - [ ] إدارة البادئات الكتابية (إنشاء/استنساخ/نسخ احتياطي) خلف طبقة موافقة صريحة وسجل تدقيق (P2/P7 — محجوزة حتى بناء الطبقة)

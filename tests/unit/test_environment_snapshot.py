@@ -126,5 +126,82 @@ class SnapshotTests(unittest.TestCase):
             )
 
 
+class BareWineLauncherTests(unittest.TestCase):
+
+    def test_bare_wine_session_reports_wine(self):
+        # WINEPREFIX declared, no launcher markers: explicit "wine".
+        env = {"WINEPREFIX": "/home/user/prefix"}
+        self.assertEqual(
+            detect_launcher(env, prefix_declared=True), "wine"
+        )
+        snapshot = collect(env=env, prefix_path="/home/user/prefix")
+        self.assertEqual(snapshot.launcher, "wine")
+        self.assertEqual(snapshot.to_launcher(), "wine")
+
+    def test_no_prefix_declared_stays_unknown(self):
+        env = {"PATH": "/usr/bin"}
+        self.assertEqual(
+            detect_launcher(env, prefix_declared=False), "unknown"
+        )
+        self.assertIsNone(collect(env=env).to_launcher())
+
+    def test_launcher_marker_wins_over_bare_wine(self):
+        env = {"SteamAppId": "1245620", "WINEPREFIX": "/home/u/p"}
+        self.assertEqual(
+            detect_launcher(env, prefix_declared=True), "steam"
+        )
+
+
+class PrefixHashTests(unittest.TestCase):
+
+    def test_hash_is_truncated_hex_without_path_data(self):
+        hash_value = collect(prefix_path="/home/user/My Prefix").prefix_hash
+        self.assertIsNotNone(hash_value)
+        self.assertEqual(len(hash_value), 16)
+        self.assertRegex(hash_value, r"^[a-f0-9]{16}$")
+        self.assertNotIn("/", hash_value)
+        self.assertNotIn("My Prefix", hash_value)
+
+    def test_hash_is_deterministic_and_path_sensitive(self):
+        first = collect(prefix_path="/home/user/a").prefix_hash
+        again = collect(prefix_path="/home/user/a").prefix_hash
+        other = collect(prefix_path="/home/user/b").prefix_hash
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+
+    def test_missing_prefix_yields_no_hash(self):
+        snapshot = collect(env={})
+        self.assertIsNone(snapshot.prefix_hash)
+        self.assertIsNone(snapshot.to_prefix_hash())
+
+    def test_hash_helper_rejects_garbage(self):
+        from wine_ai.environment.snapshot import prefix_hash_of
+        self.assertIsNone(prefix_hash_of(""))
+        self.assertIsNone(prefix_hash_of("   "))
+        self.assertIsNone(prefix_hash_of(None))
+
+    def test_record_snapshot_with_hash_is_accepted_by_store(self):
+        # End-to-end: snapshot fields flow into the store's allow-lists.
+        from wine_ai.knowledge.store import KnowledgeStore
+        with tempfile.TemporaryDirectory() as tmp:
+            store = KnowledgeStore(Path(tmp) / "s.sqlite3")
+            snapshot = collect(
+                env={"WINEPREFIX": "/home/u/pfx"},
+                prefix_path="/home/u/pfx",
+            )
+            store.add_record(
+                wine_version=snapshot.wine_version,
+                distro=snapshot.distro,
+                error_category="unknown",
+                evidence_status="UNPROVEN",
+                confidence="low",
+                launcher=snapshot.to_launcher(),
+                prefix_hash=snapshot.to_prefix_hash(),
+            )
+            record = store.list_records()[0]
+            self.assertEqual(record["launcher"], "wine")
+            self.assertEqual(len(record["prefix_hash"]), 16)
+
+
 if __name__ == "__main__":
     unittest.main()
