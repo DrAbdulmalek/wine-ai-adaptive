@@ -1,9 +1,12 @@
-'''Tests for strict recipe loading and evidence integration.'''
+'''Stdlib tests for strict recipe loading and KnowledgeStore integration.'''
 
 import json
+import tempfile
+import unittest
+from pathlib import Path
 
-import pytest
-
+from wine_ai.knowledge.bridge import persist_findings
+from wine_ai.knowledge.store import KnowledgeStore
 from wine_ai.recipes import (
     RECIPES_DIR,
     RecipeError,
@@ -13,7 +16,7 @@ from wine_ai.recipes import (
 )
 
 
-def _base_recipe(**overrides):
+def base_recipe(**overrides):
     recipe = {
         'name': 'test-app',
         'app': 'Test App',
@@ -21,82 +24,146 @@ def _base_recipe(**overrides):
         'winetricks_verbs': ['corefonts'],
         'dependencies': ['Some runtime'],
         'compatibility_status': 'UNPROVEN',
+        'last_tested': None,
         'notes': 'Draft for testing.',
     }
     recipe.update(overrides)
     return recipe
 
 
-def _write(tmp_path, recipe, filename='recipe.json'):
-    path = tmp_path / filename
-    path.write_text(json.dumps(recipe), encoding='utf-8')
-    return path
+class RecipeLoaderTests(unittest.TestCase):
+    def write_recipe(self, directory, recipe, filename='recipe.json'):
+        path = Path(directory) / filename
+        path.write_text(json.dumps(recipe), encoding='utf-8')
+        return path
 
+    def test_bundled_recipes_are_valid_and_unproven(self):
+        recipes = list_recipes(RECIPES_DIR)
+        by_name = {recipe['name']: recipe for recipe in recipes}
+        self.assertTrue({'trados-studio', 'memoq'} <= set(by_name))
+        for name in ('trados-studio', 'memoq'):
+            self.assertEqual(by_name[name]['compatibility_status'], 'UNPROVEN')
+            self.assertIsNone(by_name[name]['last_tested'])
 
-def test_bundled_recipes_are_valid_and_unproven():
-    recipes = list_recipes(RECIPES_DIR)
-    names = {r['name'] for r in recipes}
-    assert {'trados-studio', 'memoq'} <= names
-    for recipe in recipes:
-        assert recipe['compatibility_status'] in (
-            'UNPROVEN', 'PARTIALLY_PROVEN', 'CONTRADICTED',
+    def test_null_last_tested_is_valid_and_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_recipe(directory, base_recipe(last_tested=None))
+            recipe = load_recipe(path)
+        self.assertIn('last_tested', recipe)
+        self.assertIsNone(recipe['last_tested'])
+
+    def test_real_iso_date_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_recipe(
+                directory, base_recipe(last_tested='2026-01-15')
+            )
+            recipe = load_recipe(path)
+        self.assertEqual(recipe['last_tested'], '2026-01-15')
+
+    def test_noncanonical_or_future_dates_are_rejected(self):
+        for invalid in ('20260115', '2026-02-30', '2099-01-01', 20260115):
+            with self.subTest(value=invalid):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = self.write_recipe(
+                        directory, base_recipe(last_tested=invalid)
+                    )
+                    with self.assertRaises(RecipeError):
+                        load_recipe(path)
+
+    def test_recipe_cannot_declare_proven(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_recipe(
+                directory, base_recipe(compatibility_status='PROVEN')
+            )
+            with self.assertRaises(RecipeError):
+                load_recipe(path)
+
+    def test_winetricks_verbs_allow_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_recipe(
+                directory,
+                base_recipe(winetricks_verbs=['corefonts', 'evil_verb']),
+            )
+            with self.assertRaises(RecipeError):
+                load_recipe(path)
+
+    def test_each_list_item_is_validated(self):
+        for invalid in (['ok', ''], ['ok', 42], ['x' * 129]):
+            with self.subTest(value=invalid):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = self.write_recipe(
+                        directory, base_recipe(dependencies=invalid)
+                    )
+                    with self.assertRaises(RecipeError):
+                        load_recipe(path)
+
+    def test_unknown_keys_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_recipe(
+                directory, base_recipe(shell_command='not-allowed')
+            )
+            with self.assertRaises(RecipeError):
+                load_recipe(path)
+
+    def test_duplicate_json_keys_are_rejected(self):
+        raw = (
+            '{"name":"test-app","name":"other-app",'
+            '"app":"Test","wine_version_suggestion":"wine 9",'
+            '"dependencies":["runtime"],"notes":"draft",'
+            '"compatibility_status":"UNPROVEN"}'
         )
-        assert recipe['compatibility_status'] != 'PROVEN'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'duplicate.json'
+            path.write_text(raw, encoding='utf-8')
+            with self.assertRaises(RecipeError):
+                load_recipe(path)
+
+    def test_invalid_name_and_missing_file_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.write_recipe(
+                directory, base_recipe(name='Bad_Name!')
+            )
+            with self.assertRaises(RecipeError):
+                load_recipe(path)
+            with self.assertRaises(RecipeError):
+                load_recipe(Path(directory) / 'missing.json')
 
 
-def test_recipe_cannot_declare_proven(tmp_path):
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, _base_recipe(
-            compatibility_status='PROVEN',
-        )))
+class RecipeEvidenceIntegrationTests(unittest.TestCase):
+    def test_recipe_finding_persists_through_knowledge_bridge(self):
+        recipe = {
+            'name': 'trados-studio',
+            'compatibility_status': 'UNPROVEN',
+        }
+        finding = recipe_finding(recipe, status='PROVEN', confidence='high')
+        self.assertEqual(finding['error_code'], 'RECIPE_TRADOS_STUDIO')
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = KnowledgeStore(Path(directory) / 'knowledge.sqlite3')
+            record_ids = persist_findings(
+                store,
+                [finding],
+                wine_version='9.0',
+                distro='Manjaro',
+            )
+            self.assertEqual(len(record_ids), 1)
+            rows = store.list_records()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['error_code'], 'RECIPE_TRADOS_STUDIO')
+            self.assertEqual(rows[0]['evidence_status'], 'PROVEN')
+            self.assertEqual(rows[0]['confidence'], 'high')
+
+    def test_blocked_and_invalid_findings_are_rejected(self):
+        recipe = {'name': 'memoq'}
+        with self.assertRaises(ValueError):
+            recipe_finding(recipe, status='BLOCKED')
+        with self.assertRaises(ValueError):
+            recipe_finding(recipe, status='NOT_A_STATUS')
+        with self.assertRaises(ValueError):
+            recipe_finding(recipe, status='PROVEN', confidence='certain')
+        with self.assertRaises(ValueError):
+            recipe_finding({'name': 'Bad_Name'}, status='PROVEN')
 
 
-def test_winetricks_verbs_allow_list(tmp_path):
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, _base_recipe(
-            winetricks_verbs=['corefonts', 'evil_verb'],
-        )))
-
-
-def test_list_items_validated_individually(tmp_path):
-    recipe = _base_recipe(dependencies=['ok', ''])
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, recipe))
-    recipe = _base_recipe(dependencies=['ok', 42])
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, recipe))
-
-
-def test_rejects_shell_like_unsupported_keys(tmp_path):
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, _base_recipe(
-            shell_command='rm -rf /',
-        )))
-
-
-def test_name_pattern_enforced(tmp_path):
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, _base_recipe(name='Bad_Name!')))
-
-
-def test_future_last_tested_rejected(tmp_path):
-    with pytest.raises(RecipeError):
-        load_recipe(_write(tmp_path, _base_recipe(
-            last_tested='2099-01-01',
-        )))
-
-
-def test_missing_file(tmp_path):
-    with pytest.raises(RecipeError):
-        load_recipe(tmp_path / 'nope.json')
-
-
-def test_recipe_finding_valid_statuses(tmp_path):
-    recipe = load_recipe(_write(tmp_path, _base_recipe()))
-    finding = recipe_finding(recipe, status='PARTIALLY_PROVEN')
-    assert finding['status'] == 'PARTIALLY_PROVEN'
-    assert finding['error_code'] == 'recipe_test-app'
-    with pytest.raises(ValueError):
-        recipe_finding(recipe, status='NOT_A_STATUS')
-    with pytest.raises(ValueError):
-        recipe_finding(recipe, status='BLOCKED')
+if __name__ == '__main__':
+    unittest.main()
