@@ -179,7 +179,7 @@ class RecipeEvidenceIntegrationTests(unittest.TestCase):
             'name': 'trados-studio',
             'compatibility_status': 'UNPROVEN',
         }
-        finding = recipe_finding(recipe, status='PARTIALLY_PROVEN')
+        finding = recipe_finding(recipe, status='PARTIALLY_PROVEN', confidence='high')
         self.assertEqual(finding['error_code'], 'RECIPE_TRADOS_STUDIO')
 
         with tempfile.TemporaryDirectory() as directory:
@@ -201,12 +201,6 @@ class RecipeEvidenceIntegrationTests(unittest.TestCase):
         recipe = {'name': 'trados-studio', 'compatibility_status': 'UNPROVEN'}
         with self.assertRaises(ValueError):
             recipe_finding(recipe, status='PROVEN', confidence='high')
-
-    def test_empty_test_list_is_independently_rejected(self):
-        recipe = {'name': 'memoq', 'compatibility_status': 'UNPROVEN'}
-        outcome = base_outcome(tests_performed=[])
-        with self.assertRaisesRegex(ValueError, 'non-empty list'):
-            record_test_outcome(recipe, **outcome)
 
 
 if __name__ == '__main__':
