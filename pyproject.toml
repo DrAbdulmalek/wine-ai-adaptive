@@ -1,17 +1,18 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "wine-ai-adaptive"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first hardened diagnostic knowledge core for Wine on Linux"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
     { name = "DrAbdulmalek" }
 ]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["wine", "diagnostics", "sqlite", "knowledge-store", "hardened", "local-first", "evidence", "linux"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -20,7 +21,6 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -33,6 +33,9 @@ wine-ai = "wine_ai.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+wine_ai = ["gpu_compatibility/data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

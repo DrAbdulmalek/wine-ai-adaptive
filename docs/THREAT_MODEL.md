@@ -29,6 +29,7 @@
 | T11 | سباقات check-then-use (TOCTOU) بين الفحص والفتح | تضييق النافذة: `O_NOFOLLOW`, `O_EXCL`, `lstat` ثم فتح — **لا يُزال السباق كليًا من فضاء المستخدم** | واجهة `_initialize` كلها | لا يُختبر آليًا (سباق تعشوائي) | PARTIALLY_PROVEN |
 | T12 | تسرب خصوصية: تخزين سجلات خام أو مسارات أو نصوص عشوائية | قوائم مسموحة لكل حقل + قيود `CHECK` في SQLite كخط دفاع أخير | `_prepare_record`, مخطط الجدول | `test_rejects_raw_log_argument`, `test_rejects_path_in_version`, `test_rejects_arbitrary_category`, `test_extra_fields_are_rejected` | PROVEN |
 | T13 | كتابة جزئية للدفعة عند فشل سجل في منتصفها | التحقق الكامل قبل المعاملة، ثم إدراج ذري بتراجع كامل | `add_records_atomic` | `test_invalid_second_record_rejects_entire_batch`, `test_database_failure_rolls_back_entire_batch` | PROVEN |
+| T14 | ترحيل مخطط متعثّر أو متلاعب به (v1→v2) يترك القاعدة في حالة مكسورة | التحقق من بصمة SQL القانونية لـ v1 ومجموعة الأعمدة قبل المساس، ثم ترقية داخل معاملة واحدة `BEGIN IMMEDIATE`؛ أي فشل يتراجع ويُبقي القاعدة على v1 دون تعديل | `_migrate_v1_to_v2`, `_initialize` | `test_v1_database_migrates_and_preserves_rows`, `test_migration_failure_is_atomic`, `test_tampered_v1_sql_is_refused_without_migration`, `test_v1_with_extra_column_is_refused` | PROVEN |
 
 ## المخاطر المتبقية المعلنة (لا تُخفى ولا تُبالغ فيها)
 
@@ -52,6 +53,9 @@
   TOCTOU، فحص نوع الملف، أذونات ملفات WAL/SHM/journal المشتقة من
   `umask`، فجوة التحقق من المخطط الفعلي مقابل `user_version` وحده،
   وحماية التهيئة الجزئية.
+- المرحلة 6 من خطة التطوير في المحادثة نفسها: قواعد الترحيل الآمن
+  (فحص قبل المساس، معاملة ذرية، فشل يُبقي الإصدار القديم سليمًا) والتحذير
+  بعدم رفع رقم الإصدار قبل اختبار الترحيل على قاعدة v1 حقيقية.
 - التدقيق الداخلي الموثق في [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
 - سياسة عمل المساهمين والوكلاء في [AGENT_POLICY.md](AGENT_POLICY.md).
 

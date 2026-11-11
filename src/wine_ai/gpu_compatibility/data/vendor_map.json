@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "description": "Hand-written, offline GPU vendor knowledge for heuristic triage of graphics errors. Written for this project; inspired by community compatibility knowledge (WineHQ AppDB, WinuxDB). No code or data is copied from external projects.",
+    "disclaimer": "Entries are heuristic indicators for triage only, not root-cause proof."
+  },
+  "intel": {
+    "common_graphics_errors": [
+      "STATUS_NOT_SUPPORTED",
+      "D3D11_ERROR_DEVICE_REMOVED"
+    ],
+    "notes": "Mesa iris/crocus drivers. For diagnosis only, LIBGL_ALWAYS_SOFTWARE=1 can help separate driver issues from application issues."
+  },
+  "amd": {
+    "common_graphics_errors": [
+      "0xC0000005",
+      "STATUS_INVALID_IMAGE_FORMAT"
+    ],
+    "notes": "RADV (Mesa) or AMDGPU-pro. Verify vulkaninfo output before drawing conclusions."
+  },
+  "nvidia": {
+    "common_graphics_errors": [
+      "0x887A0005",
+      "STATUS_NOT_SUPPORTED"
+    ],
+    "notes": "Proprietary driver or NVK. Mixed driver setups are a common source of device-removed errors."
+  },
+  "unknown": {
+    "common_graphics_errors": [],
+    "notes": "Insufficient data; run the Vulkan probe to identify the vendor."
+  }
+}

@@ -274,5 +274,91 @@ class KnowledgeBridgeTests(unittest.TestCase):
 
         self.assertEqual(self.store.list_records(), [])
 
+class KnowledgeBridgeStructuredFieldsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Path(self.temp.name) / "bridge.sqlite3"
+        self.store = KnowledgeStore(self.db)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def finding(self, **overrides):
+        finding = {"category": "graphics"}
+        finding.update(overrides)
+        return finding
+
+    def test_batch_level_error_code_is_applied(self):
+        persist_findings(
+            self.store,
+            [self.finding()],
+            wine_version="11.19",
+            distro="Manjaro",
+            error_code="0xC0000005",
+        )
+        records = self.store.list_records()
+        self.assertEqual(records[0]["error_code"], "0xC0000005")
+
+    def test_finding_level_error_code_wins(self):
+        persist_findings(
+            self.store,
+            [
+                self.finding(error_code="STATUS_DLL_NOT_FOUND"),
+                self.finding(),
+            ],
+            wine_version="11.19",
+            distro="Manjaro",
+            error_code="0xC0000005",
+        )
+        codes = [r["error_code"] for r in self.store.list_records()]
+        self.assertIn("STATUS_DLL_NOT_FOUND", codes)
+        self.assertIn("0xC0000005", codes)
+
+    def test_lowercase_code_is_normalized(self):
+        persist_findings(
+            self.store,
+            [self.finding(error_code="status_dll_not_found")],
+            wine_version="11.19",
+            distro="Manjaro",
+        )
+        records = self.store.list_records()
+        self.assertEqual(
+            records[0]["error_code"], "STATUS_DLL_NOT_FOUND"
+        )
+
+    def test_invalid_error_code_is_rejected(self):
+        with self.assertRaises(ValueError):
+            persist_findings(
+                self.store,
+                [self.finding()],
+                wine_version="11.19",
+                distro="Manjaro",
+                error_code="arbitrary raw text!",
+            )
+        self.assertEqual(self.store.list_records(), [])
+
+    def test_path_like_prefix_id_is_rejected(self):
+        with self.assertRaises(ValueError):
+            persist_findings(
+                self.store,
+                [self.finding()],
+                wine_version="11.19",
+                distro="Manjaro",
+                prefix_id="/home/user/prefix",
+            )
+        self.assertEqual(self.store.list_records(), [])
+
+    def test_prefix_id_is_persisted(self):
+        persist_findings(
+            self.store,
+            [self.finding()],
+            wine_version="11.19",
+            distro="Manjaro",
+            prefix_id="game-1234",
+        )
+        records = self.store.list_records()
+        self.assertEqual(records[0]["prefix_id"], "game-1234")
+
+
 if __name__ == "__main__":
     unittest.main()

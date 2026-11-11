@@ -18,6 +18,11 @@ Security properties implemented here:
   a single transaction, and partially initialized databases are
   detected and refused instead of being silently completed.
 - Sidecar files found next to the database are restricted to 0600.
+- Schema version 2 adds two optional columns (``error_code`` and
+  ``prefix_id``). Version 1 databases are upgraded by an atomic
+  migration that first verifies the stored CREATE statement and the
+  column set, and fails closed leaving the database untouched on any
+  mismatch or error.
 
 Documented limitations (these are NOT fully eliminated):
 
@@ -41,7 +46,7 @@ import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_BATCH_SIZE = 100
 
 ERROR_CATEGORIES = {
@@ -70,11 +75,49 @@ TABLE_NAME = "diagnostic_records"
 # Sidecar files SQLite can place next to the database file.
 SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
-# Canonical schema. The sqlite_master SQL stored by databases created
-# by this library matches this text after whitespace normalization
-# (SQLite strips "IF NOT EXISTS" when storing the statement). Any
-# other definition is refused as incompatible.
+# Canonical schema (version 2). The sqlite_master SQL stored by
+# databases created by this library matches this text after whitespace
+# normalization (SQLite strips "IF NOT EXISTS" when storing the
+# statement). Any other definition is refused as incompatible.
 EXPECTED_TABLE_SQL = """
+CREATE TABLE diagnostic_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    wine_version TEXT NOT NULL,
+    distro TEXT NOT NULL,
+    error_category TEXT NOT NULL,
+    evidence_status TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    gpu_vendor TEXT NOT NULL,
+    error_code TEXT,
+    prefix_id TEXT,
+    CHECK (error_category IN (
+        'missing_module',
+        'graphics',
+        'memory',
+        'startup',
+        'unknown'
+    )),
+    CHECK (evidence_status IN (
+        'PROVEN',
+        'PARTIALLY_PROVEN',
+        'UNPROVEN',
+        'CONTRADICTED',
+        'BLOCKED'
+    )),
+    CHECK (confidence IN (
+        'low', 'medium', 'high'
+    )),
+    CHECK (gpu_vendor IN (
+        'intel', 'amd', 'nvidia', 'unknown'
+    ))
+)
+"""
+
+# Version 1 canonical schema. Databases migrated from version 1 keep
+# this stored CREATE statement (ALTER TABLE does not rewrite it), so
+# it is accepted as long as the column set matches version 2 exactly.
+EXPECTED_TABLE_SQL_V1 = """
 CREATE TABLE diagnostic_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -118,7 +161,31 @@ EXPECTED_COLUMNS = {
     "evidence_status": ("TEXT", True, False),
     "confidence": ("TEXT", True, False),
     "gpu_vendor": ("TEXT", True, False),
+    "error_code": ("TEXT", False, False),
+    "prefix_id": ("TEXT", False, False),
 }
+
+# Version 1 columns (the migration pre-check requires exactly this set
+# before touching a version 1 database).
+EXPECTED_COLUMNS_V1 = {
+    "id": ("INTEGER", False, True),
+    "created_at": ("TEXT", True, False),
+    "wine_version": ("TEXT", True, False),
+    "distro": ("TEXT", True, False),
+    "error_category": ("TEXT", True, False),
+    "evidence_status": ("TEXT", True, False),
+    "confidence": ("TEXT", True, False),
+    "gpu_vendor": ("TEXT", True, False),
+}
+
+# Structured error-code identifier: either a hexadecimal code
+# (HRESULT/NTSTATUS/exception) or an UPPER_SNAKE_CASE name
+# (STATUS_*/ERROR_*). No paths, spaces or arbitrary text.
+SAFE_CODE = re.compile(r"^(0x[0-9A-Fa-f]{1,8}|[A-Z][A-Z0-9_]{1,63})$")
+
+MAX_LIST_LIMIT = 1000
+QUERY_LIMIT_DEFAULT = 100
+QUERY_LIMIT_MAX = 1000
 
 
 class KnowledgeStoreError(Exception):
@@ -139,6 +206,41 @@ def _validate_choice(value, allowed, field_name):
     if not isinstance(value, str) or value not in allowed:
         raise ValueError(f"Unsupported {field_name}")
     return value
+
+
+def _validate_limit(limit, default=QUERY_LIMIT_DEFAULT):
+    if limit is None:
+        return default
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= MAX_LIST_LIMIT
+    ):
+        raise ValueError(
+            f"limit must be an integer from 1 to {MAX_LIST_LIMIT}"
+        )
+    return limit
+
+
+def normalize_error_code(value):
+    """Validate and normalize an error-code identifier.
+
+    Hexadecimal codes keep the lowercase ``0x`` prefix and gain
+    uppercase hex digits; UPPER_SNAKE_CASE names are uppercased
+    (lowercase names are accepted and normalized). Anything else is
+    rejected.
+    """
+    if not isinstance(value, str):
+        raise ValueError("Invalid error_code")
+    if value.lower().startswith("0x"):
+        candidate = "0x" + value[2:]
+        if not SAFE_CODE.fullmatch(candidate):
+            raise ValueError("Invalid error_code")
+        return "0x" + value[2:].upper()
+    candidate = value.upper()
+    if not SAFE_CODE.fullmatch(candidate):
+        raise ValueError("Invalid error_code")
+    return candidate
 
 
 def _normalize_sql(sql):
@@ -299,6 +401,20 @@ class KnowledgeStore:
         return row is not None
 
     @staticmethod
+    def _read_columns(connection):
+        columns = connection.execute(
+            f"PRAGMA table_info({TABLE_NAME})"
+        ).fetchall()
+        return {
+            column[1]: (
+                (column[2] or "").upper(),
+                bool(column[3]),
+                bool(column[5]),
+            )
+            for column in columns
+        }
+
+    @staticmethod
     def _verify_schema(connection):
         row = connection.execute(
             "SELECT sql FROM sqlite_master "
@@ -309,22 +425,16 @@ class KnowledgeStore:
             raise KnowledgeStoreError(
                 "Schema verification failed: table is missing"
             )
-        if _normalize_sql(row[0]) != _normalize_sql(EXPECTED_TABLE_SQL):
+        normalized = _normalize_sql(row[0])
+        if normalized not in (
+            _normalize_sql(EXPECTED_TABLE_SQL),
+            _normalize_sql(EXPECTED_TABLE_SQL_V1),
+        ):
             raise KnowledgeStoreError(
                 "Schema verification failed: incompatible table definition"
             )
 
-        columns = connection.execute(
-            f"PRAGMA table_info({TABLE_NAME})"
-        ).fetchall()
-        actual = {
-            column[1]: (
-                (column[2] or "").upper(),
-                bool(column[3]),
-                bool(column[5]),
-            )
-            for column in columns
-        }
+        actual = KnowledgeStore._read_columns(connection)
         if set(actual) != set(EXPECTED_COLUMNS):
             raise KnowledgeStoreError(
                 "Schema verification failed: incompatible column set"
@@ -334,6 +444,50 @@ class KnowledgeStore:
                 raise KnowledgeStoreError(
                     f"Schema verification failed: unexpected column {name}"
                 )
+
+    def _migrate_v1_to_v2(self, connection):
+        """Atomically upgrade a verified version 1 database.
+
+        Pre-checks are strict: the stored CREATE statement must match
+        the canonical version 1 text and the column set must be exactly
+        the version 1 columns. Any failure rolls the migration back and
+        leaves the database on version 1, unchanged.
+        """
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = ?",
+            (TABLE_NAME,),
+        ).fetchone()
+        if row is None or not row[0]:
+            raise KnowledgeStoreError(
+                "Schema migration failed: table is missing"
+            )
+        if _normalize_sql(row[0]) != _normalize_sql(EXPECTED_TABLE_SQL_V1):
+            raise KnowledgeStoreError(
+                "Schema migration failed: incompatible table definition"
+            )
+
+        actual = self._read_columns(connection)
+        if set(actual) != set(EXPECTED_COLUMNS_V1):
+            raise KnowledgeStoreError(
+                "Schema migration failed: incompatible column set"
+            )
+
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"ALTER TABLE {TABLE_NAME} ADD COLUMN error_code TEXT"
+            )
+            connection.execute(
+                f"ALTER TABLE {TABLE_NAME} ADD COLUMN prefix_id TEXT"
+            )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.commit()
+        except Exception as exc:
+            connection.rollback()
+            raise KnowledgeStoreError(
+                "Schema migration failed: database left unchanged"
+            ) from exc
 
     def _initialize(self):
         self._verify_parent_directory()
@@ -345,7 +499,7 @@ class KnowledgeStore:
                 "PRAGMA user_version"
             ).fetchone()[0]
 
-            if version not in (0, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise KnowledgeStoreError(
                     f"Unsupported database schema version: {version}"
                 )
@@ -357,7 +511,7 @@ class KnowledgeStore:
                     "Partial initialization detected: table exists but "
                     "schema version is not stamped"
                 )
-            if version == SCHEMA_VERSION and not table_exists:
+            if version in (1, SCHEMA_VERSION) and not table_exists:
                 raise KnowledgeStoreError(
                     "Partial initialization detected: schema version is "
                     "stamped but table is missing"
@@ -374,6 +528,8 @@ class KnowledgeStore:
                 except Exception:
                     connection.rollback()
                     raise
+            elif version == 1:
+                self._migrate_v1_to_v2(connection)
 
             self._verify_schema(connection)
         finally:
@@ -395,6 +551,8 @@ class KnowledgeStore:
             "evidence_status",
             "confidence",
             "gpu_vendor",
+            "error_code",
+            "prefix_id",
         }
 
         if set(record) - allowed_keys:
@@ -437,6 +595,14 @@ class KnowledgeStore:
             "gpu_vendor",
         )
 
+        error_code = record.get("error_code")
+        if error_code is not None:
+            error_code = normalize_error_code(error_code)
+
+        prefix_id = record.get("prefix_id")
+        if prefix_id is not None:
+            prefix_id = _validate_label(prefix_id, "prefix_id")
+
         created_at = datetime.now(
             timezone.utc
         ).isoformat(timespec="seconds")
@@ -449,6 +615,8 @@ class KnowledgeStore:
             evidence_status,
             confidence,
             gpu_vendor,
+            error_code,
+            prefix_id,
         )
 
     def add_records_atomic(self, records):
@@ -482,9 +650,11 @@ class KnowledgeStore:
                             error_category,
                             evidence_status,
                             confidence,
-                            gpu_vendor
+                            gpu_vendor,
+                            error_code,
+                            prefix_id
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, values)
 
                     record_ids.append(cursor.lastrowid)
@@ -502,6 +672,8 @@ class KnowledgeStore:
         evidence_status,
         confidence,
         gpu_vendor="unknown",
+        error_code=None,
+        prefix_id=None,
     ):
         record_ids = self.add_records_atomic([{
             "wine_version": wine_version,
@@ -510,36 +682,117 @@ class KnowledgeStore:
             "evidence_status": evidence_status,
             "confidence": confidence,
             "gpu_vendor": gpu_vendor,
+            "error_code": error_code,
+            "prefix_id": prefix_id,
         }])
 
         return record_ids[0]
 
+    _RECORD_COLUMNS = """
+                id,
+                created_at,
+                wine_version,
+                distro,
+                error_category,
+                evidence_status,
+                confidence,
+                gpu_vendor,
+                error_code,
+                prefix_id
+    """
+
+    def _query_records(self, clause, parameter, limit):
+        """Read-only parameterized lookup shared by find_* helpers."""
+        limit = _validate_limit(limit)
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    {self._RECORD_COLUMNS}
+                FROM diagnostic_records
+                WHERE {clause}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (parameter, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            connection.close()
+
     def list_records(self, limit=100):
-        if (
-            not isinstance(limit, int)
-            or isinstance(limit, bool)
-            or not 1 <= limit <= 1000
-        ):
-            raise ValueError("limit must be an integer from 1 to 1000")
+        limit = _validate_limit(limit)
 
         connection = self._connect()
 
         try:
-            rows = connection.execute("""
+            rows = connection.execute(f"""
                 SELECT
-                    id,
-                    created_at,
-                    wine_version,
-                    distro,
-                    error_category,
-                    evidence_status,
-                    confidence,
-                    gpu_vendor
+                    {self._RECORD_COLUMNS}
                 FROM diagnostic_records
                 ORDER BY id DESC
                 LIMIT ?
             """, (limit,)).fetchall()
 
             return [dict(row) for row in rows]
+        finally:
+            connection.close()
+
+    # -- read-only query layer -------------------------------------------
+
+    def find_by_error_category(self, category, limit=QUERY_LIMIT_DEFAULT):
+        """Records filtered by an allow-listed error category."""
+        _validate_choice(category, ERROR_CATEGORIES, "error_category")
+        return self._query_records("error_category = ?", category, limit)
+
+    def find_by_gpu_vendor(self, vendor, limit=QUERY_LIMIT_DEFAULT):
+        """Records filtered by an allow-listed GPU vendor."""
+        _validate_choice(vendor, GPU_VENDORS, "gpu_vendor")
+        return self._query_records("gpu_vendor = ?", vendor, limit)
+
+    def find_by_evidence_status(
+        self, status, limit=QUERY_LIMIT_DEFAULT
+    ):
+        """Records filtered by an allow-listed evidence status."""
+        _validate_choice(status, EVIDENCE_STATUSES, "evidence_status")
+        return self._query_records("evidence_status = ?", status, limit)
+
+    def find_by_error_code(self, error_code, limit=QUERY_LIMIT_DEFAULT):
+        """Records carrying a specific structured error code."""
+        normalized = normalize_error_code(error_code)
+        return self._query_records("error_code = ?", normalized, limit)
+
+    def category_counts(self):
+        """Record counts grouped by error category (all categories)."""
+        connection = self._connect()
+        try:
+            rows = connection.execute("""
+                SELECT error_category, COUNT(*) AS total
+                FROM diagnostic_records
+                GROUP BY error_category
+                ORDER BY total DESC, error_category ASC
+            """).fetchall()
+            return {row[0]: row[1] for row in rows}
+        finally:
+            connection.close()
+
+    def correlate_error_codes(self, limit=QUERY_LIMIT_DEFAULT):
+        """Structured error codes ranked by how often they recur."""
+        limit = _validate_limit(limit)
+        connection = self._connect()
+        try:
+            rows = connection.execute("""
+                SELECT error_code, COUNT(*) AS total
+                FROM diagnostic_records
+                WHERE error_code IS NOT NULL
+                GROUP BY error_code
+                ORDER BY total DESC, error_code ASC
+                LIMIT ?
+            """, (limit,)).fetchall()
+            return [
+                {"error_code": row[0], "count": row[1]}
+                for row in rows
+            ]
         finally:
             connection.close()
