@@ -93,8 +93,9 @@ def _open_audit_log(home_fd: int) -> int:
             fd = os.open(AUDIT_FILENAME, flags, dir_fd=logs_fd)
         try:
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-                raise BottleCreateError("Audit log must be a user-owned regular file")
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_nlink != 1):
+                raise BottleCreateError("Audit log must be a singly-linked, user-owned regular file")
             if created:
                 os.fchmod(fd, FILE_MODE); info = os.fstat(fd)
             if stat.S_IMODE(info.st_mode) != FILE_MODE:
