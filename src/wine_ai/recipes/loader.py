@@ -170,8 +170,8 @@ def load_recipe(path):
     if not isinstance(status, str) or status not in ALLOWED_RECIPE_STATUSES:
         raise RecipeError(
             'Recipe compatibility_status must be one of '
-            f'{sorted(ALLOWED_RECIPE_STATUSES)}; PROVEN can only be '
-            'reached through record_test_outcome'
+            f'{sorted(ALLOWED_RECIPE_STATUSES)}; PROVEN is currently '
+            'disabled until a trusted evidence-verification mechanism exists'
         )
 
     dependencies = _validated_string_list(data, 'dependencies')
@@ -259,5 +259,3 @@ def recipe_finding(recipe, *, status, confidence='low'):
         'confidence': confidence,
         'error_code': error_code,
     }
-
-
