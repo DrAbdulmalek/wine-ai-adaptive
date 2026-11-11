@@ -37,4 +37,19 @@ jobs:
       # Stdlib-only runner (unittest): the project policy forbids
       # external dependencies, including development extras.
       - name: Run test suite (stdlib unittest)
-        run: python -m unittest discover -s tests/unit -p 'test_*.py' -v
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests/unit -p 'test_*.py' -v 2>&1 | tee /tmp/unittest.log | tail -5
+          code=$?
+          if [ $code -ne 0 ]; then
+            {
+              echo "### unittest failure tail (py ${{ matrix.python-version }})"
+              echo '```text'
+              grep -E "^(FAIL|ERROR):|^====|^Ran |^OK|^FAILED" /tmp/unittest.log | head -40
+              echo '```'
+              echo '```text'
+              tail -n 150 /tmp/unittest.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $code
