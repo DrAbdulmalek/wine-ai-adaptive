@@ -83,10 +83,14 @@ def _open_dir_path(path: Path | str) -> int:
                     ) from exc
                 raise
             opened = os.fstat(next_fd)
-            if not stat.S_ISDIR(opened.st_mode):
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+            ):
                 os.close(next_fd)
                 raise _UnsafePathError(
-                    errno.ENOTDIR, "opened object is not a directory", component
+                    errno.EAGAIN, "directory component changed during open",
+                    component,
                 )
             os.close(fd)
             fd = next_fd
@@ -140,8 +144,11 @@ def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
         return None, f"{type(exc).__name__}: {exc}"
     try:
         opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode):
-            return None, "system.reg changed type before it could be read"
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+        ):
+            return None, "system.reg changed identity or type before it could be read"
         raw = os.read(fd, REG_HEADER_BYTES)
     except OSError as exc:
         return None, f"{type(exc).__name__}: {exc}"
@@ -181,9 +188,12 @@ def _probe_nested_directory(
             except OSError as exc:
                 return False, f"{type(exc).__name__}: {exc}"
             opened = os.fstat(next_fd)
-            if not stat.S_ISDIR(opened.st_mode):
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+            ):
                 os.close(next_fd)
-                return False, f"Opened object is not a directory: {component}"
+                return False, f"Directory changed identity during open: {component}"
             os.close(current_fd)
             current_fd = next_fd
         return True, None
