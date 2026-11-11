@@ -17,6 +17,7 @@
 | **WineHQ AppDB** | شكل بيانات التوافق (كائن، إصدار، تقييم) كبيانات مرفقة دون اتصال | `src/wine_ai/gpu_compatibility/data/vendor_map.json` + `vendor_data.py` (معرفة ثابتة bundled) |
 | **petamas/python-ntstatus** | فك رموز NTSTATUS بشكل موثوق | **غير مُدمج** — يتطلب اعتمادية خارجية يمنعها نموذج الأمن (مكتبة قياسية فقط). جداول التصنيف الداخلية في `diagnostics/codes.py` تغطي الرموز الشائعة، والقرار موثّق في `docs/reviews/EXTERNAL_REVIEWS.md` |
 | **GPU vendorID في `vulkaninfo`** (نمط شائع في أدوات Proton) | ربط `vendorID = 0x8086/0x1002/0x10DE` بمورّد GPU بلا استدعاءات إضافية | `src/wine_ai/gpu_compatibility/probe.py` — `parse_vulkan_summary` و`VENDOR_ID_MAP` |
+| **CrossOver (CodeWeavers)** | تفكيك وظيفي لسلوك منتج احتكاري وتنفيذ مستقل له (Bottles/Recipes/Compatibility DB…) — **أنماط ووظائف فقط، لا شيفرة ولا CrossTies ولا قواعد بيانات** | `docs/CROSSOVER_CLEAN_ROOM_SPEC.md` (المواصفة المرجعية المكيّفة) + `src/wine_ai/bottle_manager/discovery.py` (طبقة P0 للقراءة فقط: اكتشاف وفحص البادئات) — والحدود القانونية في `docs/LEGAL_AND_LICENSE_BOUNDARY.md` |
 
 ## حدود الاستخدام
 
