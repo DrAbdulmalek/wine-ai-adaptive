@@ -1,6 +1,6 @@
 # Recipe validation integration repair
 
-Status: implementation committed; automated CI evidence pending.
+Status: implementation committed; CI evidence must be checked against the final branch head.
 
 ## Scope
 
@@ -17,12 +17,20 @@ is preserved unchanged.
 - Normalize recipe finding identifiers to the KnowledgeStore's
   `UPPER_SNAKE_CASE` error-code format and bound recipe names so the
   generated identifier fits the store's 64-character limit.
-- Validate evidence status and confidence before producing a finding.
-  `BLOCKED` remains non-persistable; `PROVEN` can only be supplied as
-  an independently asserted test outcome, never by recipe metadata.
+- `recipe_finding()` rejects `PROVEN` unconditionally.
+- `record_test_outcome()` validates structured observation metadata but
+  also rejects `PROVEN`: metadata and a caller-supplied reference do not
+  establish report existence, authenticity, or correspondence to the
+  claimed test.
+- The generic `persist_findings()` bridge rejects `PROVEN` records.
+  The low-level KnowledgeStore remains a caller-trusted storage API and
+  is not an evidence-verification authority.
 - Convert the recipe tests to the project's stdlib `unittest` runner and
   exercise the actual `recipe_finding -> persist_findings -> KnowledgeStore`
   path using a temporary database.
+- Correct the evidence model: no recipe API or generic bridge may mint
+  `PROVEN` until a trusted verifier, durable evidence binding, and
+  independently reviewable trust configuration exist.
 - Include the Trados and memoQ JSON files in package data and verify that
   both are present in the built wheel in CI.
 
@@ -34,6 +42,6 @@ or external network services. Tests use temporary directories only.
 
 ## Evidence
 
-The source changes and test cases are committed. No passing test or CI
-result is claimed in this document until a corresponding GitHub Actions
-run is observed for the final commit.
+All tests use temporary directories and databases. No Wine, winetricks,
+subprocess, real prefix, or sudo operation is involved. CI status is
+reported only after a run is observed for the exact final branch head.
