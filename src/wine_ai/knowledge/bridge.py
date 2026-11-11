@@ -121,6 +121,11 @@ def persist_findings(
         )
         if not isinstance(status, str) or status not in EVIDENCE_STATUSES:
             raise ValueError("Unsupported evidence status")
+        if status == "PROVEN":
+            raise ValueError(
+                "PROVEN is disabled in persist_findings until a trusted "
+                "evidence-verification and binding mechanism is implemented"
+            )
 
         confidence = finding.get("confidence", "low")
         if (

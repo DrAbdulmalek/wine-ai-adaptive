@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "security/**", "fix/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "security/**", "fix/**"]
   workflow_dispatch:
 
 jobs:
@@ -38,3 +38,27 @@ jobs:
       # external dependencies, including development extras.
       - name: Run test suite (stdlib unittest)
         run: python -m unittest discover -s tests/unit -p 'test_*.py' -v
+
+      - name: Build wheel
+        run: python -m pip wheel --no-deps --wheel-dir dist .
+
+      - name: Verify bundled recipe data in wheel
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected one wheel, found {len(wheels)}")
+          required = {
+              "wine_ai/recipes/trados-studio.json",
+              "wine_ai/recipes/memoq.json",
+          }
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              packaged = set(wheel.namelist())
+          missing = sorted(required - packaged)
+          if missing:
+              raise SystemExit(f"Recipe data missing from wheel: {missing}")
+          print("Both bundled recipe files are present in the wheel.")
+          PY

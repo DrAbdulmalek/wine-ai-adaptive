@@ -32,5 +32,4 @@ wine-ai = "wine_ai.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-wine_ai = ["gpu_compatibility/data/*.json"]
-"wine_ai.recipes" = ["*.json"]
+wine_ai = ["gpu_compatibility/data/*.json", "recipes/*.json"]
