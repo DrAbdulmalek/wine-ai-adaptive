@@ -213,18 +213,22 @@ class RecordTestOutcomeTests(unittest.TestCase):
                     record_test_outcome(self.recipe, **outcome)
 
     def test_empty_or_invalid_structured_fields_are_rejected(self):
+        # Distinct cases: bad labels, empty/over-long values, an empty
+        # tests list, item-level emptiness, and impossible/future dates.
         cases = {
             'app_version': '../evil',
             'wine_version': '',
             'environment': 'x' * 129,
             'tests_performed': [],
-            'tests_performed': ['install', ''],
             'evidence_reference': '',
-            'evidence_reference': 'x' * 257,
             'test_date': '2099-01-01',
+        }
+        extra_cases = {
+            'tests_performed': ['install', ''],
+            'evidence_reference': 'x' * 257,
             'test_date': '2026-02-30',
         }
-        for field, value in cases.items():
+        for field, value in {**cases, **extra_cases}.items():
             with self.subTest(field=field):
                 outcome = base_outcome(**{field: value})
                 with self.assertRaises(ValueError):
@@ -245,7 +249,7 @@ class RecordTestOutcomeTests(unittest.TestCase):
 
 class RecipeEvidenceIntegrationTests(unittest.TestCase):
     def test_test_outcome_proven_persists_through_knowledge_bridge(self):
-        recipe = load_recipe_dict = {
+        recipe = {
             'name': 'trados-studio',
             'compatibility_status': 'UNPROVEN',
         }
