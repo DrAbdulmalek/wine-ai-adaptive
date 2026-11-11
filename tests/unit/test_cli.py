@@ -6,10 +6,12 @@ prints structured findings, and stores nothing.
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from wine_ai.cli import main
 
@@ -99,6 +101,92 @@ class DiagnoseCommandTests(unittest.TestCase):
     def test_diagnose_requires_log_argument(self):
         with self.assertRaises(SystemExit):
             self._run(["diagnose"])
+
+
+class PrefixesCommandTests(unittest.TestCase):
+    """The prefixes command must stay read-only discovery + evidence."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        env_patcher = mock.patch.dict(os.environ, clear=False)
+        self.env = env_patcher.start()
+        self.env.pop("WINEPREFIX", None)
+        self.env["HOME"] = str(self.home)
+        self.addCleanup(env_patcher.stop)
+
+    def _make_prefix(self, name: str, arch: str = "win64") -> Path:
+        managed = (
+            self.home / ".local" / "share"
+            / "wine-ai-adaptive" / "prefixes"
+        )
+        managed.mkdir(parents=True, exist_ok=True)
+        prefix = managed / name
+        (prefix / "drive_c").mkdir(parents=True)
+        (prefix / "system.reg").write_text(
+            f"##arch - {arch}\n", encoding="ascii"
+        )
+        for reg in ("user.reg", "userdef.reg"):
+            (prefix / reg).write_text("## WINE registry\n", encoding="ascii")
+        return prefix
+
+    def _run(self, argv):
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = main(argv)
+        return code, buffer.getvalue()
+
+    def test_prefixes_json_reports_discovered_prefix(self):
+        self._make_prefix("trados", arch="win64")
+        code, out = self._run(["prefixes", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        names = [item["name"] for item in payload["prefixes"]]
+        self.assertIn("trados", names)
+        info = next(
+            item for item in payload["prefixes"]
+            if item["name"] == "trados"
+        )
+        self.assertEqual(info["architecture"], "win64")
+        self.assertFalse(info["protected"])
+        statuses = [item["status"] for item in payload["evidence"]]
+        self.assertIn("PROVEN", statuses)
+
+    def test_prefixes_human_output_mentions_protection_note(self):
+        self._make_prefix("memoq")
+        code, out = self._run(["prefixes"])
+        self.assertEqual(code, 0)
+        self.assertIn("memoq", out)
+        self.assertIn("read-only discovery", out)
+        self.assertIn("not implemented by design", out)
+
+    def test_prefixes_flags_default_prefix_as_protected(self):
+        prefix = self.home / ".wine"
+        (prefix / "drive_c").mkdir(parents=True)
+        (prefix / "system.reg").write_text("##arch - win64\n", encoding="ascii")
+        for reg in ("user.reg", "userdef.reg"):
+            (prefix / reg).write_text("## WINE registry\n", encoding="ascii")
+        code, out = self._run(["prefixes", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        info = next(
+            item for item in payload["prefixes"]
+            if item["name"] == ".wine"
+        )
+        self.assertTrue(info["protected"])
+
+    def test_prefixes_empty_environment_still_succeeds(self):
+        code, out = self._run(["prefixes", "--json"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["prefixes"], [])
+        self.assertTrue(payload["evidence"])
+
+    def test_prefixes_stores_nothing(self):
+        before = sorted(p.name for p in self.home.iterdir())
+        self._run(["prefixes", "--json"])
+        after = sorted(p.name for p in self.home.iterdir())
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
