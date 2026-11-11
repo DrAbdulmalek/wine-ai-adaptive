@@ -1,10 +1,16 @@
+import inspect
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from wine_ai.knowledge.store import KnowledgeStore, SCHEMA_VERSION
+from wine_ai import portability as portability_module
+from wine_ai.knowledge.store import (
+    KnowledgeStore,
+    KnowledgeStoreError,
+    SCHEMA_VERSION,
+)
 from wine_ai.portability import (
     FORMAT_ID,
     MAX_IMPORT_RECORDS,
@@ -230,6 +236,184 @@ class ImportTests(unittest.TestCase):
         stored = target.list_records()[0]
         self.assertNotIn("raw_log", stored)
         self.assertNotIn("created_at_ym", stored)
+
+    # -- store contract ------------------------------------------------------
+
+    def test_prepare_record_contract(self):
+        # portability relies on KnowledgeStore._prepare_record: pin the
+        # contract (staticmethod, accepts a dict, returns the 9-value
+        # insert tuple, raises ValueError on any violation) so a silent
+        # upstream change cannot break import validation.
+        attr = inspect.getattr_static(KnowledgeStore, "_prepare_record")
+        self.assertIsInstance(attr, staticmethod)
+
+        prepared = KnowledgeStore._prepare_record(_valid_record())
+        self.assertIsInstance(prepared, tuple)
+        self.assertEqual(len(prepared), 9)
+
+        with self.assertRaises(ValueError):
+            KnowledgeStore._prepare_record("not-a-dict")
+        bad = _valid_record()
+        bad["raw_log"] = "x"
+        with self.assertRaises(ValueError):
+            KnowledgeStore._prepare_record(bad)
+
+    # -- record-shape edge cases ----------------------------------------------
+
+    def test_rejects_record_not_dict(self):
+        package = _valid_package(["just a string"])
+        target = _new_store(self.root, "target.sqlite3")
+        with self.assertRaises(PortabilityError):
+            import_package(target, package)
+        self.assertEqual(target.list_records(), [])
+
+    def test_accepts_missing_prefix_id_when_opted_in(self):
+        # includes_prefix_id=True means the field MAY appear; records
+        # without it are still valid (the stored column stays NULL).
+        record = _valid_record()
+        package = _valid_package([record], includes_prefix_id=True)
+        target = _new_store(self.root, "target.sqlite3")
+        ids = import_package(target, package)
+        self.assertEqual(len(ids), 1)
+        self.assertIsNone(target.list_records()[0]["prefix_id"])
+
+    def test_rejects_invalid_created_at_ym(self):
+        for bad in ("2026-13", "2026-1", "not-a-date", 202611, None):
+            with self.subTest(value=bad):
+                record = _valid_record()
+                record["created_at_ym"] = bad
+                package = _valid_package([record])
+                target = _new_store(self.root, "target.sqlite3")
+                with self.assertRaises(PortabilityError):
+                    import_package(target, package)
+                self.assertEqual(target.list_records(), [])
+
+    def test_accepts_created_at_ym_known_and_unknown(self):
+        records = [_valid_record(), _valid_record()]
+        records[0]["created_at_ym"] = "2026-11"
+        records[1]["created_at_ym"] = "unknown"
+        package = _valid_package(records)
+        target = _new_store(self.root, "target.sqlite3")
+        ids = import_package(target, package)
+        self.assertEqual(len(ids), 2)
+
+    # -- header strictness -----------------------------------------------------
+
+    def test_rejects_extra_header_key(self):
+        package = _valid_package([_valid_record()])
+        package["extra_field"] = "smuggled"
+        target = _new_store(self.root, "target.sqlite3")
+        with self.assertRaises(PortabilityError):
+            import_package(target, package)
+
+    def test_rejects_missing_header_key(self):
+        package = _valid_package([_valid_record()])
+        del package["includes_time"]
+        target = _new_store(self.root, "target.sqlite3")
+        with self.assertRaises(PortabilityError):
+            import_package(target, package)
+
+    def test_rejects_non_bool_includes_time(self):
+        package = _valid_package([_valid_record()])
+        package["includes_time"] = "yes"
+        target = _new_store(self.root, "target.sqlite3")
+        with self.assertRaises(PortabilityError):
+            import_package(target, package)
+
+    def test_rejects_bool_package_version(self):
+        # bool is a subclass of int; True must NOT pass as version 1.
+        package = _valid_package([_valid_record()])
+        package["package_version"] = True
+        target = _new_store(self.root, "target.sqlite3")
+        with self.assertRaises(PortabilityError):
+            import_package(target, package)
+
+    def test_rejects_invalid_exported_at(self):
+        for bad in ("2026-13", "2026-1", "2026-11-15", 202611, None):
+            with self.subTest(value=bad):
+                package = _valid_package([_valid_record()])
+                package["exported_at"] = bad
+                target = _new_store(self.root, "target.sqlite3")
+                with self.assertRaises(PortabilityError):
+                    import_package(target, package)
+
+    # -- file-level edge cases --------------------------------------------------
+
+    def test_read_package_missing_file_raises_file_not_found(self):
+        with self.assertRaises(FileNotFoundError):
+            read_package(self.root / "does-not-exist.json")
+
+    def test_read_package_rejects_invalid_utf8(self):
+        bad = self.root / "bad-utf8.json"
+        bad.write_bytes(b"{\xff\xfe\x00}not utf8")
+        with self.assertRaises(PortabilityError):
+            read_package(bad)
+
+    def test_read_package_rejects_symlink(self):
+        real = self.root / "real.json"
+        real.write_text("{}", encoding="utf-8")
+        link = self.root / "link.json"
+        os.symlink(real, link)
+        with self.assertRaises(PortabilityError):
+            read_package(link)
+
+    def test_read_package_rejects_oversized_file(self):
+        original_cap = portability_module.MAX_PACKAGE_BYTES
+        portability_module.MAX_PACKAGE_BYTES = 64
+        try:
+            big = self.root / "big.json"
+            big.write_text("{" + " " * 200 + "}", encoding="utf-8")
+            with self.assertRaises(PortabilityError):
+                read_package(big)
+        finally:
+            portability_module.MAX_PACKAGE_BYTES = original_cap
+
+    # -- batch boundaries --------------------------------------------------------
+
+    def test_accepts_exactly_max_import_records(self):
+        records = [_valid_record() for _ in range(MAX_IMPORT_RECORDS)]
+        package = _valid_package(records)
+        target = _new_store(self.root, "target.sqlite3")
+        ids = import_package(target, package)
+        self.assertEqual(len(ids), MAX_IMPORT_RECORDS)
+        self.assertEqual(
+            len(target.list_records(limit=MAX_IMPORT_RECORDS)),
+            MAX_IMPORT_RECORDS,
+        )
+
+    def test_batch_boundaries_are_crossed_successfully(self):
+        # 250 records = 3 chunks (100 + 100 + 50) across the store's
+        # MAX_BATCH_SIZE boundary.
+        records = [_valid_record() for _ in range(250)]
+        package = _valid_package(records)
+        target = _new_store(self.root, "target.sqlite3")
+        ids = import_package(target, package)
+        self.assertEqual(len(ids), 250)
+
+    def test_later_batch_failure_keeps_earlier_batches(self):
+        # Documented residual risk: insertion is per-batch atomic, not
+        # per-package. A failure in a later batch keeps earlier batches;
+        # this test pins that honest behavior.
+        target = _new_store(self.root, "target.sqlite3")
+        calls = {"count": 0}
+        original = target.add_records_atomic
+
+        def flaky_add(records):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise KnowledgeStoreError("injected later-batch failure")
+            return original(records)
+
+        target.add_records_atomic = flaky_add
+
+        records = [_valid_record() for _ in range(150)]
+        package = _valid_package(records)
+        with self.assertRaises(KnowledgeStoreError):
+            import_package(target, package)
+
+        self.assertEqual(calls["count"], 2)
+        stored = target.list_records(limit=1000)
+        self.assertEqual(len(stored), 100)
 
 
 if __name__ == "__main__":

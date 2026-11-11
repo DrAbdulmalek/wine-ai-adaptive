@@ -1,5 +1,7 @@
 import json
 import os
+import sqlite3
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from wine_ai.portability import (
     MAX_EXPORT_RECORDS,
     PACKAGE_VERSION,
     PortabilityError,
+    _year_month,
     export_records,
     export_to_file,
     write_package,
@@ -137,6 +140,83 @@ class ExportTests(unittest.TestCase):
         export_to_file(self.store, out)
         reloaded = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(reloaded["record_count"], 1)
+
+    # -- export re-validation gate -------------------------------------------
+
+    def test_export_blocked_when_tampered_row_detected(self):
+        # A row tampered with through a raw SQLite connection (the only
+        # field the SQL CHECK constraints cannot cover is created_at)
+        # must block the export instead of leaving the store.
+        _add(self.store)
+        connection = sqlite3.connect(str(self.store.db_path))
+        try:
+            connection.execute(
+                "UPDATE diagnostic_records "
+                "SET created_at = 'garbage-timestamp' "
+                "WHERE id = (SELECT MIN(id) FROM diagnostic_records)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(PortabilityError):
+            export_records(self.store)
+
+    # -- write safety ---------------------------------------------------------
+
+    def test_write_package_rejects_symlink_target(self):
+        victim = self.root / "victim.txt"
+        victim.write_text("innocent", encoding="utf-8")
+        link = self.root / "pkg.json"
+        os.symlink(victim, link)
+
+        _add(self.store)
+        package = export_records(self.store)
+        with self.assertRaises(PortabilityError):
+            write_package(package, link)
+
+        self.assertEqual(victim.read_text(encoding="utf-8"), "innocent")
+        self.assertTrue(link.is_symlink())
+
+    def test_write_package_replaces_existing_file_atomically(self):
+        _add(self.store)
+        out = self.root / "pkg.json"
+        out.write_text("old content", encoding="utf-8")
+        os.chmod(out, 0o644)
+
+        package = export_records(self.store)
+        write_package(package, out)
+
+        reloaded = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(reloaded["record_count"], 1)
+        # Exported packages carry diagnostic metadata: owner-only.
+        mode = stat.S_IMODE(out.lstat().st_mode) & 0o777
+        self.assertEqual(mode, 0o600)
+        # No temp files left behind.
+        leftovers = [
+            p.name for p in self.root.iterdir()
+            if p.name.startswith(".wine-ai-export-")
+        ]
+        self.assertEqual(leftovers, [])
+
+    def test_write_package_rejects_invalid_package_before_write(self):
+        out = self.root / "pkg.json"
+        with self.assertRaises(PortabilityError):
+            write_package({"format": "bogus"}, out)
+        self.assertFalse(out.exists())
+
+    # -- timestamp reduction -----------------------------------------------------
+
+    def test_year_month_rejects_malformed_sources(self):
+        self.assertEqual(_year_month("2026-11-11T10:43:19+00:00"), "2026-11")
+        # Reduced-precision values do not parse as full ISO datetimes,
+        # so they yield the documented "unknown" placeholder.
+        self.assertEqual(_year_month("2026-11"), "unknown")
+        self.assertEqual(_year_month("not-a-date"), "unknown")
+        self.assertEqual(_year_month("2026-13-01T00:00:00"), "unknown")
+        self.assertEqual(_year_month(""), "unknown")
+        self.assertEqual(_year_month(None), "unknown")
+        self.assertEqual(_year_month(202611), "unknown")
 
 
 if __name__ == "__main__":

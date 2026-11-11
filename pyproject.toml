@@ -25,9 +25,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=7.0"]
-
 [project.scripts]
 wine-ai = "wine_ai.cli:main"
 
@@ -36,7 +33,3 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 wine_ai = ["gpu_compatibility/data/*.json"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]

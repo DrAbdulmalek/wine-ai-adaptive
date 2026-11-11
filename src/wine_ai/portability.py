@@ -10,8 +10,15 @@ allow-list of fields from each diagnostic record. It never contains:
 - full timestamps (year/month only, or nothing)
 - ``prefix_id`` unless explicitly requested
 
-The import path validates the package header, then validates each record
-via the store's own ``_prepare_record``, then inserts the batch through
+Records are re-validated on the way OUT as well as on the way IN: before
+any record is exported, it is checked against the store's own stored-row
+rules (``validate_existing_record``). A database that was tampered with
+through a raw SQLite connection fails the export instead of emitting
+unstructured data.
+
+The import path validates the package header (exact key set, typed
+fields), then validates each record via the store's own
+``_prepare_record``, then inserts the batch through
 ``KnowledgeStore.add_records_atomic``.
 
 Residual risk (documented, not eliminated)
@@ -20,8 +27,22 @@ Residual risk (documented, not eliminated)
 Import is chunked at that size to respect the store's limit. Validation
 is all-or-nothing (every record passes ``_prepare_record`` before any
 insert). If a chunk insert fails after validation (rare: disk or trigger
-errors), earlier chunks remain inserted. This is the only residual risk
-of the portability layer and is documented here and in docs/portability.md.
+errors), earlier chunks remain inserted. Import is therefore NOT
+all-or-nothing at the package level — only at the validation level.
+This is the only residual risk of the portability layer and is
+documented here and in docs/portability.md.
+
+File handling
+-------------
+- ``write_package`` writes atomically (temp file in the target
+  directory + ``os.replace``), refuses symbolic-link targets, and never
+  creates directories. The export path itself is caller-supplied: the
+  caller is responsible for choosing a safe location.
+- Exported packages are written 0600 (owner-only); they contain
+  diagnostic metadata even when anonymized.
+- ``read_package`` requires a regular, non-symlink file, enforces a
+  hard byte cap (``MAX_PACKAGE_BYTES``) before parsing, and decodes
+  strict UTF-8.
 
 Format versioning
 -----------------
@@ -29,12 +50,17 @@ Format versioning
 ``package_version``  gates backward-incompatible format changes.
 ``schema_version``   gates the underlying store schema.
 
-Both must match a supported value or import fails closed.
+All header fields are validated with an exact key-set allow-list; any
+unknown, missing or mistyped header field fails closed.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -43,6 +69,7 @@ from wine_ai.knowledge.store import (
     MAX_BATCH_SIZE,
     SCHEMA_VERSION,
     KnowledgeStore,
+    validate_existing_record,
 )
 
 
@@ -52,6 +79,27 @@ SUPPORTED_PACKAGE_VERSIONS = frozenset({1})
 
 MAX_EXPORT_RECORDS = 1000
 MAX_IMPORT_RECORDS = 1000
+
+# Hard ceiling on the serialized package size accepted by read_package.
+# 1,000 records at their maximum legal size stay far below this; the cap
+# exists so a hostile file cannot exhaust memory before validation.
+MAX_PACKAGE_BYTES = 4 * 1024 * 1024
+
+# Exact header key set: missing or extra keys are refused.
+HEADER_KEYS = frozenset({
+    "format",
+    "package_version",
+    "schema_version",
+    "exported_at",
+    "record_count",
+    "includes_prefix_id",
+    "includes_time",
+    "records",
+})
+
+# "YYYY-MM" with a real month ("unknown" is allowed for created_at_ym
+# as a documented informational value).
+_YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-(?:0[1-9]|1[0-2])$")
 
 EXPORT_FIELDS = (
     "wine_version",
@@ -76,7 +124,19 @@ class PortabilityError(ValueError):
 
 
 def _year_month(value: Any) -> str:
-    if not isinstance(value, str) or len(value) < 7:
+    """Reduce a timestamp to ``YYYY-MM``.
+
+    The value must parse as a real ISO-8601 datetime; anything else —
+    wrong type, malformed, impossible month — yields the documented
+    placeholder ``"unknown"`` instead of a silently truncated string.
+    """
+    if not isinstance(value, str):
+        return "unknown"
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return "unknown"
+    if len(value) < 7:
         return "unknown"
     return value[:7]
 
@@ -139,14 +199,23 @@ def export_records(
         )
 
     raw_records = store.list_records(limit=max_records)
-    records: list[dict[str, Any]] = [
-        _export_one(
-            raw,
-            include_prefix_id=include_prefix_id,
-            include_time=include_time,
+    records: list[dict[str, Any]] = []
+    for raw in raw_records:
+        # Fail-closed export gate: a tampered database cannot leak its
+        # rows through the export path.
+        try:
+            validate_existing_record(raw)
+        except ValueError as exc:
+            raise PortabilityError(
+                f"export blocked: stored record failed re-validation: {exc}"
+            ) from exc
+        records.append(
+            _export_one(
+                raw,
+                include_prefix_id=include_prefix_id,
+                include_time=include_time,
+            )
         )
-        for raw in raw_records
-    ]
 
     return {
         "format": FORMAT_ID,
@@ -161,10 +230,50 @@ def export_records(
 
 
 def write_package(package: dict[str, Any], path: str | Path) -> Path:
-    """Write ``package`` to ``path`` as UTF-8 JSON. Does not create directories."""
+    """Write ``package`` to ``path`` as UTF-8 JSON.
+
+    Safety properties:
+
+    - the package must pass the full header validation first;
+    - a symbolic link or non-regular file at ``path`` is refused
+      instead of being followed or replaced;
+    - the write is atomic: a temp file is created in the target
+      directory (mode 0600), fully written and flushed, then moved
+      into place with ``os.replace`` — readers never observe a
+      partial file;
+    - directories are never created; the caller owns the location.
+    """
+    validate_package(package)
+
     target = Path(path)
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if stat.S_ISLNK(info.st_mode):
+            raise PortabilityError("export target is a symbolic link")
+        if not stat.S_ISREG(info.st_mode):
+            raise PortabilityError("export target is not a regular file")
+
     text = json.dumps(package, ensure_ascii=False, indent=2, sort_keys=True)
-    target.write_text(text + "\n", encoding="utf-8")
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=".wine-ai-export-",
+        dir=str(target.parent),
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, str(target))
+    except BaseException:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return target
 
 
@@ -199,25 +308,39 @@ def _require(cond: bool, msg: str) -> None:
 def _validate_header(package: Any) -> dict[str, Any]:
     _require(isinstance(package, dict), "package must be a JSON object")
     _require(
+        set(package) == HEADER_KEYS,
+        "package header must contain exactly the documented fields "
+        f"{sorted(HEADER_KEYS)}",
+    )
+    _require(
         package.get("format") == FORMAT_ID,
         f"format must be {FORMAT_ID!r}",
     )
+    version = package.get("package_version")
     _require(
-        package.get("package_version") in SUPPORTED_PACKAGE_VERSIONS,
-        f"unsupported package_version: {package.get('package_version')!r}",
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version in SUPPORTED_PACKAGE_VERSIONS,
+        f"unsupported package_version: {version!r}",
     )
     _require(
         package.get("schema_version") == SCHEMA_VERSION,
         f"schema_version must be {SCHEMA_VERSION}, "
         f"got {package.get('schema_version')!r}",
     )
+    exported_at = package.get("exported_at")
     _require(
-        isinstance(package.get("exported_at"), str),
-        "exported_at must be a string",
+        isinstance(exported_at, str)
+        and _YEAR_MONTH_PATTERN.fullmatch(exported_at) is not None,
+        "exported_at must be a 'YYYY-MM' string with a real month",
     )
     _require(
         isinstance(package.get("includes_prefix_id"), bool),
         "includes_prefix_id must be bool",
+    )
+    _require(
+        isinstance(package.get("includes_time"), bool),
+        "includes_time must be bool",
     )
     _require(
         isinstance(package.get("records"), list),
@@ -245,8 +368,29 @@ def validate_package(package: Any) -> dict[str, Any]:
 
 
 def read_package(path: str | Path) -> dict[str, Any]:
-    """Read and header-validate an export package from disk."""
-    text = Path(path).read_text(encoding="utf-8")
+    """Read and header-validate an export package from disk.
+
+    The path must be a regular, non-symlink file. The raw bytes are
+    capped at ``MAX_PACKAGE_BYTES`` before parsing and must decode as
+    strict UTF-8. ``FileNotFoundError`` propagates to the caller.
+    """
+    target = Path(path)
+    info = target.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise PortabilityError("package path is a symbolic link")
+    if not stat.S_ISREG(info.st_mode):
+        raise PortabilityError("package path is not a regular file")
+
+    with open(target, "rb") as handle:
+        blob = handle.read(MAX_PACKAGE_BYTES + 1)
+    if len(blob) > MAX_PACKAGE_BYTES:
+        raise PortabilityError(
+            f"package exceeds MAX_PACKAGE_BYTES={MAX_PACKAGE_BYTES}"
+        )
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PortabilityError("package is not valid UTF-8") from exc
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -274,13 +418,24 @@ def _normalize_record(
             "prefix_id" not in record,
             f"records[{index}] contains prefix_id but includes_prefix_id is false",
         )
+    if "created_at_ym" in record:
+        ym = record["created_at_ym"]
+        _require(
+            ym == "unknown"
+            or (
+                isinstance(ym, str)
+                and _YEAR_MONTH_PATTERN.fullmatch(ym) is not None
+            ),
+            f"records[{index}].created_at_ym must be 'YYYY-MM' or 'unknown'",
+        )
     normalized: dict[str, Any] = {}
     for field in EXPORT_FIELDS:
         if field in record:
             normalized[field] = record[field]
     if includes_prefix_id and "prefix_id" in record:
         normalized["prefix_id"] = record["prefix_id"]
-    # created_at_ym is informational only; created_at is regenerated by the store.
+    # created_at_ym is informational only (format-validated above);
+    # created_at is regenerated by the store on insert.
     return normalized
 
 
