@@ -32,7 +32,7 @@ REG_HEADER_BYTES = 64
 
 MARKER_DIR = "drive_c"
 MARKER_FILES = ("system.reg", "user.reg", "userdef.reg")
-_ARCH_LINE = re.compile(r"^#{1,2}\\s*arch\\s*-\\s*win(32|64)\\s*$")
+_ARCH_LINE = re.compile(r"^#{1,2}\s*arch\s*-\s*win(32|64)\s*$")
 _MANAGED_ROOT_PARTS = (".local", "share", "wine-ai-adaptive", "prefixes")
 
 
@@ -148,7 +148,7 @@ def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
     finally:
         os.close(fd)
 
-    first_line = raw.decode("utf-8", errors="replace").split("\\n", 1)[0]
+    first_line = raw.decode("utf-8", errors="replace").split("\n", 1)[0]
     match = _ARCH_LINE.match(first_line.strip())
     if not match:
         return None, None
@@ -206,7 +206,7 @@ def _inspect_candidate(
     except _UnsafePathError as exc:
         evidence.append(Evidence(
             "prefix_candidate", EvidenceStatus.BLOCKED,
-            "Symlink or unsafe object in candidate path; traversal refused",
+            "Symlinked prefix candidate or unsafe path component rejected; traversal refused",
             source, {"path": str(absolute), "error": str(exc)},
         ))
         return None, evidence
@@ -263,7 +263,7 @@ def _inspect_candidate(
         if rejected_links or wrong_types:
             evidence.append(Evidence(
                 "prefix_markers", EvidenceStatus.BLOCKED,
-                "Symlinked or non-regular prefix markers rejected",
+                "Symlinked registry files or non-regular prefix markers rejected",
                 source,
                 {
                     "path": str(absolute),
@@ -354,7 +354,7 @@ def discover_prefixes(
     protected_identity = _directory_identity(protected_path)
     evidence: list[Evidence] = []
     results: list[dict] = []
-    seen: set[tuple[int, int]] = set()
+    seen: dict[tuple[int, int], dict] = {}
 
     def emit(candidate: Path, origin: str, protected: bool = False) -> None:
         absolute = Path(os.path.abspath(candidate))
@@ -369,18 +369,11 @@ def discover_prefixes(
             return
         identity = info.pop("_identity")
         if identity in seen:
-            # A later discovery source may reveal protected identity. Never
-            # downgrade a previously discovered protected prefix.
-            existing = next(
-                (item for item in results
-                 if (item.pop("_identity", None) == identity)),
-                None,
-            )
-            if existing is not None:
-                existing["protected"] = existing["protected"] or info["protected"]
-                existing["_identity"] = identity
+            # Never downgrade a protected identity discovered via another source.
+            existing = seen[identity]
+            existing["protected"] = existing["protected"] or info["protected"]
             return
-        seen.add(identity)
+        seen[identity] = info
         info["_identity"] = identity
         results.append(info)
 
@@ -439,7 +432,7 @@ def discover_prefixes(
             if overflow:
                 evidence.append(Evidence(
                     "prefix_discovery", EvidenceStatus.PARTIALLY_PROVEN,
-                    "Scan stopped at MAX_SCAN_SUBDIRS entries for this root",
+                    "Scan capped at MAX_SCAN_SUBDIRS entries; remaining entries were not enumerated",
                     f"bottle_manager.discovery:{origin}",
                     {
                         "path": str(root),
