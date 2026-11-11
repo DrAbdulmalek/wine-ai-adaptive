@@ -490,6 +490,47 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
                     for item in evidence
                 ))
 
+    def test_real_fstat_failure_blocks_one_candidate_and_closes_descriptor(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        broken = make_prefix(managed, "a-broken")
+        good = make_prefix(managed, "z-good")
+        real_open_dir = discovery._open_dir_path
+        real_fstat = os.fstat
+        failed_fds = set()
+
+        def track_candidate_descriptor(path):
+            fd = real_open_dir(path)
+            if Path(path) == broken:
+                failed_fds.add(fd)
+            return fd
+
+        def fail_candidate_fstat(fd):
+            if fd in failed_fds:
+                raise OSError(errno.EIO, "injected os.fstat failure")
+            return real_fstat(fd)
+
+        with mock.patch.object(
+            discovery, "_open_dir_path", side_effect=track_candidate_descriptor
+        ):
+            with mock.patch.object(
+                discovery.os, "fstat", side_effect=fail_candidate_fstat
+            ):
+                prefixes, evidence = discover_prefixes(home=self.home)
+
+        self.assertFalse(any(item["path"] == str(broken) for item in prefixes))
+        self.assertTrue(any(item["path"] == str(good) for item in prefixes))
+        self.assertEqual(len(failed_fds), 1)
+        for fd in failed_fds:
+            with self.assertRaises(OSError) as raised:
+                real_fstat(fd)
+            self.assertEqual(raised.exception.errno, errno.EBADF)
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "identity could not be verified" in item.summary
+            for item in evidence
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
