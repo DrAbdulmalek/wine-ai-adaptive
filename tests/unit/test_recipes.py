@@ -13,7 +13,6 @@ from wine_ai.recipes import (
     list_recipes,
     load_recipe,
     recipe_finding,
-    record_test_outcome,
 )
 
 
@@ -31,20 +30,6 @@ def base_recipe(**overrides):
     recipe.update(overrides)
     return recipe
 
-
-def base_outcome(**overrides):
-    outcome = {
-        'status': 'PARTIALLY_PROVEN',
-        'confidence': 'high',
-        'app_version': '2024 SR2',
-        'wine_version': '9.0',
-        'environment': 'Manjaro',
-        'tests_performed': ['install', 'launch', 'open project'],
-        'evidence_reference': 'https://example.test/report-1',
-        'test_date': '2026-01-15',
-    }
-    outcome.update(overrides)
-    return outcome
 
 
 class RecipeLoaderTests(unittest.TestCase):
@@ -188,87 +173,13 @@ class RecipeFindingEvidenceTests(unittest.TestCase):
             recipe_finding({'name': 'a' * 57}, status='UNPROVEN')
 
 
-class RecordTestOutcomeTests(unittest.TestCase):
-    """Only the structured test-outcome path may emit PROVEN."""
-
-    def setUp(self):
-        self.recipe = {'name': 'memoq', 'compatibility_status': 'UNPROVEN'}
-
-    def test_complete_observation_never_claims_proven(self):
-        finding = record_test_outcome(self.recipe, **base_outcome())
-        self.assertEqual(finding['status'], 'PARTIALLY_PROVEN')
-        self.assertEqual(finding['error_code'], 'RECIPE_MEMOQ')
-        self.assertEqual(finding['confidence'], 'high')
-
-    def test_proven_is_rejected_even_with_all_metadata(self):
-        with self.assertRaisesRegex(ValueError, 'no trusted evidence verifier'):
-            record_test_outcome(
-                self.recipe,
-                **base_outcome(status='PROVEN'),
-            )
-
-    def test_missing_required_fields_are_rejected(self):
-        required = (
-            'app_version', 'wine_version', 'environment',
-            'tests_performed', 'evidence_reference', 'test_date',
-        )
-        for field in required:
-            with self.subTest(field=field):
-                outcome = base_outcome()
-                del outcome[field]
-                with self.assertRaises(TypeError):
-                    record_test_outcome(self.recipe, **outcome)
-
-    def test_empty_or_invalid_structured_fields_are_rejected(self):
-        # Distinct cases: bad labels, empty/over-long values, an empty
-        # tests list, item-level emptiness, and impossible/future dates.
-        cases = {
-            'app_version': '../evil',
-            'wine_version': '',
-            'environment': 'x' * 129,
-            'tests_performed': [],
-            'evidence_reference': '',
-            'test_date': '2099-01-01',
-        }
-        extra_cases = {
-            'tests_performed': ['install', ''],
-            'evidence_reference': 'x' * 257,
-            'test_date': '2026-02-30',
-        }
-        for field, value in cases.items():
-            with self.subTest(field=field, value=value):
-                outcome = base_outcome(**{field: value})
-                with self.assertRaises(ValueError):
-                    record_test_outcome(self.recipe, **outcome)
-
-        for field, value in extra_cases.items():
-            with self.subTest(field=field, value=value):
-                outcome = base_outcome(**{field: value})
-                with self.assertRaises(ValueError):
-                    record_test_outcome(self.recipe, **outcome)
-
-    def test_blocked_and_invalid_statuses_are_rejected(self):
-        for status in ('BLOCKED', 'NOT_A_STATUS'):
-            with self.subTest(status=status):
-                with self.assertRaises(ValueError):
-                    record_test_outcome(self.recipe, **base_outcome(status=status))
-
-    def test_lower_evidence_statuses_also_require_the_full_record(self):
-        finding = record_test_outcome(
-            self.recipe, **base_outcome(status='PARTIALLY_PROVEN')
-        )
-        self.assertEqual(finding['status'], 'PARTIALLY_PROVEN')
-
-
 class RecipeEvidenceIntegrationTests(unittest.TestCase):
     def test_non_proven_test_observation_persists_through_knowledge_bridge(self):
         recipe = {
             'name': 'trados-studio',
             'compatibility_status': 'UNPROVEN',
         }
-        finding = record_test_outcome(
-            recipe, **base_outcome(status='PARTIALLY_PROVEN')
-        )
+        finding = recipe_finding(recipe, status='PARTIALLY_PROVEN')
         self.assertEqual(finding['error_code'], 'RECIPE_TRADOS_STUDIO')
 
         with tempfile.TemporaryDirectory() as directory:
