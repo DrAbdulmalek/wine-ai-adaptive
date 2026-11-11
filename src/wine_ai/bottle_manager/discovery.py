@@ -288,6 +288,7 @@ def _inspect_candidate(
                 source,
                 {"path": str(absolute / "system.reg"), "error": arch_error},
             ))
+            return None, evidence
         elif architecture:
             evidence.append(Evidence(
                 "prefix_architecture", EvidenceStatus.PROVEN,
