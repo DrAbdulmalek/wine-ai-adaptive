@@ -192,14 +192,14 @@ class CreateBottleSecurityTests(unittest.TestCase):
         self.assertFalse((managed_root(self.home)/"audit-rollback").exists())
 
     def test_G03_all_opened_and_duplicated_descriptors_are_closed(self):
-        opened=set(); closed=set()
+        opened={}; closed={}
         real_open=os.open; real_dup=os.dup; real_close=os.close
         def track_open(*args,**kwargs):
-            fd=real_open(*args,**kwargs); opened.add(fd); return fd
+            fd=real_open(*args,**kwargs); opened[fd]=opened.get(fd,0)+1; return fd
         def track_dup(fd):
-            duplicate=real_dup(fd); opened.add(duplicate); return duplicate
+            duplicate=real_dup(fd); opened[duplicate]=opened.get(duplicate,0)+1; return duplicate
         def track_close(fd):
-            if fd in opened: closed.add(fd)
+            if fd in opened: closed[fd]=closed.get(fd,0)+1
             return real_close(fd)
         with mock.patch("wine_ai.bottle_manager.create.os.open",side_effect=track_open):
             with mock.patch("wine_ai.bottle_manager.create.os.dup",side_effect=track_dup):
@@ -207,7 +207,7 @@ class CreateBottleSecurityTests(unittest.TestCase):
                     info,_=self.call_create("fd-check")
         self.assertIsNotNone(info)
         self.assertTrue(opened, "test did not observe any descriptors")
-        self.assertEqual(opened,closed, f"descriptor leak(s): {opened-closed}")
+        self.assertEqual(opened,closed, f"descriptor open/close count mismatch: {opened} != {closed}")
         Path(info["path"]).rmdir()
 
 if __name__=="__main__": unittest.main()
