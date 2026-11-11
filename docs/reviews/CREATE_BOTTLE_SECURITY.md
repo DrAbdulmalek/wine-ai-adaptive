@@ -17,7 +17,7 @@ The Create Bottle threat model T-CB-01…T-CB-10, detailed design, and security 
 5. The managed prefixes root is rejected if its identity aliases protected `~/.wine`, including a symlinked `~/.wine` that resolves to that root.
 6. The target is created relative to the managed-root descriptor. Existing files, directories, and symlinks are never replaced.
 7. The new directory is opened without following links, checked with `fstat`, set to `0700` through its descriptor, and verified again. Cleanup is limited to the still-empty object whose opened identity matches the created identity.
-8. Audit records are appended to `~/.local/share/wine-ai-adaptive/logs/create-bottle.jsonl`, outside the prefixes tree. The log is a user-owned regular file with mode `0600`, opened with `O_NOFOLLOW`. Records contain a relative path only; no absolute home path is persisted.
+8. Audit records are appended to `~/.local/share/wine-ai-adaptive/logs/create-bottle.jsonl`, outside the prefixes tree. The log is a singly-linked, user-owned regular file with mode `0600`, opened with `O_NOFOLLOW`; hard-linked audit targets are rejected. Records contain a relative path only; no absolute home path is persisted.
 9. Success is reported as `EMPTY_UNINITIALIZED`. No Wine, winetricks, shell, subprocess, or external command is invoked.
 
 ## Audit-log exception
