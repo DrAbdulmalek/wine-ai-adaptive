@@ -17,6 +17,17 @@
 
 ## [Unreleased]
 
+### Added
+- وحدة `wine_ai.portability`: تصدير/استيراد مجهّل للسجلات كحزمة JSON مستقرة الإصدار
+  (`format`/`package_version`/`schema_version` gated).
+  - الافتراضي: بلا `prefix_id`، والطوابع الزمنية مختصرة إلى `YYYY-MM` (`created_at_ym`).
+  - اختياري: `include_prefix_id=True`، أو `include_time=False` لحذف الطابع الزمني كليًا.
+  - الاستيراد يتحقق من كل سجل عبر `KnowledgeStore._prepare_record` قبل أي إدخال
+    (ذرّية التحقق)، والإدراج على دفعات بحجم `MAX_BATCH_SIZE`.
+  - سقف 1000 سجل في كل اتجاه (`MAX_EXPORT_RECORDS = MAX_IMPORT_RECORDS = 1000`).
+  - الاختبارات: `tests/unit/test_portability_export.py` و
+    `tests/unit/test_portability_import.py` (29 اختبارًا جديدًا؛ الإجمالي 137).
+
 ### Security
 - `.gitignore` يستبعد صراحةً مجلدات البيانات المحلية الحساسة `data/` و`.local-safety-backups/` (بيانات تشخيصية محلية ونسخ احتياطية أمنية — لا تُنشر أبدًا)، اتساقًا مع سياسة «لا نرفع السجل الخام، بل الخلاصة المهيكلة» ومن توصيات جلسة المراجعة الخارجية.
 

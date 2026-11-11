@@ -157,6 +157,27 @@ for record in store.list_records(limit=10):
 
 مثال كامل قابل للتشغيل: `python examples/basic_usage.py`
 
+## تصدير/استيراد مجهّل للسجلات (Portability)
+
+مشاركة المعرفة التشخيصية بين المستخدمين أو المجتمعات دون أي تسريب:
+
+- **الافتراضي:** بلا `prefix_id`، والطوابع الزمنية مختصرة إلى `YYYY-MM` (`created_at_ym`).
+- **اختياري:** `include_prefix_id=True` لطلب معرّف البادئة، أو `include_time=False` لحذف الوقت كليًا.
+- **الاستيراد:** يتحقق من كل سجل عبر `_prepare_record` نفسها قبل أي إدخال، وإدراج الدفعات على دفعات `MAX_BATCH_SIZE`.
+- **السقف:** 1000 سجل كحد أقصى في كل اتجاه. لا نص خام ولا مسارات خاصة — بحسب التصميم.
+
+```python
+from wine_ai.knowledge.store import KnowledgeStore
+from wine_ai.portability import export_to_file, import_package_file
+
+store = KnowledgeStore("data/knowledge.sqlite3")
+export_to_file(store, "export.json")                          # الافتراضي: بلا prefix_id، YYYY-MM فقط
+export_to_file(store, "export.json", include_prefix_id=True)  # طلب صريح
+import_package_file(store, "export.json")
+```
+
+التفاصيل الكاملة للصيغة والحدود والمخاطر المتبقية: `docs/portability.md`. ربط الأداة السطرية مؤجَّل عمدًا — واجهة مكتبة فقط.
+
 ## تشغيل الاختبارات
 
 ```bash
