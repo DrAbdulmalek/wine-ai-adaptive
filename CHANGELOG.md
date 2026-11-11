@@ -18,6 +18,15 @@
 ## [Unreleased]
 
 ### Added
+- أمر `wine-ai diagnose --log FILE` في الأداة السطرية: تشخيص أولي لسجل Wine/Proton
+  محلي (بحد 2 ميبيبايت) يطبع رموز الأخطاء المصنّفة وفئاتها الإرشادية ومستوى
+  الثقة وإصابات الأنماط — للقراءة فقط: لا تخزين، لا قاعدة بيانات، لا نص خام في
+  المخرجات (مستلهم من سير «شخّص ← صنّف ← اقترح»، انظر `docs/open-source-inspirations.md`).
+- تحليل `vendorID` في مخرجات `vulkaninfo --summary` داخل `probe_vulkan`:
+  حقلا `vendors` و`primary_vendor` في المخرجات (خريطة `0x8086`/`0x1002`/`0x10DE`
+  فقط، وما عداهما `unknown` — بلا تخمين ولا استدعاءات إضافية).
+- `docs/open-source-inspirations.md`: توثيق أنماط التصميم المستلهمة من مشاريع
+  مفتوحة المصدر ومكان ظهور كل نمط، مع قاعدة «أنماط لا كود» وحدود الاستخدام.
 - وحدة `wine_ai.portability`: تصدير/استيراد مجهّل للسجلات كحزمة JSON مستقرة الإصدار
   (`format`/`package_version`/`schema_version` gated).
   - الافتراضي: بلا `prefix_id`، والطوابع الزمنية مختصرة إلى `YYYY-MM` (`created_at_ym`).
