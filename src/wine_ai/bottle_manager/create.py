@@ -152,10 +152,10 @@ def _blocked(reason: str,name: str|None,operation_id: str,audit_fd: int|None=Non
     return None,[Evidence("bottle_create",EvidenceStatus.BLOCKED,reason,"bottle_manager.create",
         {"operation_id":operation_id,"relative_path":f"prefixes/{name}" if name else None})]
 
-def create_bottle(name: str, *, home: Path|None=None) -> tuple[dict|None,list[Evidence]]:
-    """Create one empty directory under the managed root; never initialize Wine."""
+def create_bottle(name: str) -> tuple[dict|None,list[Evidence]]:
+    """Create one empty directory under the current user's managed root."""
     opid=uuid.uuid4().hex; valid=name if _validate_name(name) else None
-    home_path=Path(home) if home is not None else Path.home()
+    home_path=Path.home()
     home_fd=audit_fd=root_fd=target_fd=None; identity=None
     try:
         home_fd=_open_dir_path(home_path)
