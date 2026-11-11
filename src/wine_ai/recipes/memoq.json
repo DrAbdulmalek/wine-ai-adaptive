@@ -1,0 +1,18 @@
+{
+  "name": "memoq",
+  "app": "memoQ translator pro",
+  "wine_version_suggestion": "wine-staging 9.x or newer",
+  "winetricks_verbs": ["dotnet48", "corefonts", "vcrun2019"],
+  "dependencies": [
+    ".NET Framework 4.8 (dotnet48)",
+    "Core Windows fonts (corefonts)",
+    "Visual C++ 2019 runtime (vcrun2019)"
+  ],
+  "notes": "memoQ is a .NET application with generally better Wine compatibility than Trados. Activation requires network access inside the bottle. Record every outcome in the KnowledgeStore.",
+  "steps": [
+    "create a dedicated bottle",
+    "install winetricks verbs in the listed order",
+    "run the memoQ installer inside the bottle",
+    "record the outcome (evidence_status) in the knowledge store"
+  ]
+}

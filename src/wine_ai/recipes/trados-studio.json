@@ -1,0 +1,19 @@
+{
+  "name": "trados-studio",
+  "app": "SDL Trados Studio",
+  "wine_version_suggestion": "wine-staging 9.x or newer",
+  "winetricks_verbs": ["dotnet48", "corefonts", "gdiplus", "vcrun2019"],
+  "dependencies": [
+    ".NET Framework 4.8 (dotnet48)",
+    "Core Windows fonts (corefonts)",
+    "GDI+ (gdiplus)",
+    "Visual C++ 2019 runtime (vcrun2019)"
+  ],
+  "notes": "Trados Studio is a WPF/.NET application and is one of the hardest targets under Wine. Licensing/activation may fail; test with a trial license first. Report every failure into the KnowledgeStore so recipes can be adapted.",
+  "steps": [
+    "create a dedicated bottle",
+    "install winetricks verbs in the listed order",
+    "run the Trados Studio installer inside the bottle",
+    "record the outcome (evidence_status) in the knowledge store"
+  ]
+}
