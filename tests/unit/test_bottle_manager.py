@@ -121,16 +121,35 @@ class BottleManagerTests(unittest.TestCase):
 
     # -- reconciliation -------------------------------------------------------
 
-    def test_verify_detects_identity_swap(self):
-        self.manager.create_bottle("alpha")
-        self.assertEqual(self.manager.verify_bottle("alpha")["result"], "OK")
-        # swap the directory: same name, different inode
-        fd = os.open(self.root(), os.O_RDONLY | os.O_DIRECTORY)
+    def _overwrite_record_identity(self, name: str, identity: dict) -> None:
+        """White-box helper: point one record's identity at a foreign identity.
+
+        Deterministically simulates an on-disk swap; a real rmdir+mkdir swap
+        can be masked by inode reuse on some filesystems (observed on CI).
+        """
+        from wine_ai.bottle_manager.registry import REGISTRY_VERSION
+
+        registry = self.manager._registry
+        root_fd = registry._open_root()
         try:
-            os.rmdir("alpha", dir_fd=fd)
-            os.mkdir("alpha", 0o700, dir_fd=fd)
-        finally:
+            fd, expected = registry._open_registry(root_fd)
             os.close(fd)
+            bottles = registry.read()
+            bottles[name]["identity"] = dict(identity)
+            document = {"registry_version": REGISTRY_VERSION, "bottles": bottles}
+            registry._atomic_write(root_fd, document, expected)
+        finally:
+            os.close(root_fd)
+
+    def test_verify_flags_tampered_identity(self):
+        self.manager.create_bottle("alpha")
+        self.manager.create_bottle("beta")
+        self.assertEqual(self.manager.verify_bottle("alpha")["result"], "OK")
+        # Point alpha's registry record at beta's identity: the recorded
+        # (dev, ino) no longer matches the on-disk directory.
+        beta_identity = self.manager.get_bottle("beta")["identity"]
+        self.assertNotEqual(beta_identity, self.manager.get_bottle("alpha")["identity"])
+        self._overwrite_record_identity("alpha", beta_identity)
         self.assertEqual(self.manager.verify_bottle("alpha")["result"], "IDENTITY_CHANGED")
 
     def test_verify_detects_missing_directory(self):

@@ -309,13 +309,40 @@ class RegistrySecurityTests(unittest.TestCase):
         self.registry.register(make_record("alpha", self.root, operation_id="op-2"))
         self.assertEqual(self.registry.get("alpha")["operation_id"], "op-2")
 
-    def test_verify_reports_ok_missing_changed(self):
+    def _overwrite_record_identity(self, name: str, identity: dict) -> None:
+        """White-box helper: point one record's identity at a foreign identity.
+
+        Deterministically simulates an on-disk swap that inode reuse on some
+        filesystems can otherwise mask (rmdir+mkdir may reuse the inode).
+        """
+        root_fd = self.registry._open_root()
+        try:
+            fd, expected = self.registry._open_registry(root_fd)
+            os.close(fd)
+            bottles = self.registry.read()
+            bottles[name]["identity"] = dict(identity)
+            document = {"registry_version": REGISTRY_VERSION, "bottles": bottles}
+            self.registry._atomic_write(root_fd, document, expected)
+        finally:
+            os.close(root_fd)
+
+    def test_verify_reports_ok_and_missing(self):
         self.add_bottle_dir("alpha")
         self.registry.register(make_record("alpha", self.root))
         self.assertEqual(self.registry.verify("alpha")["result"], "OK")
         remove_entry(self.root, "alpha")
         self.assertEqual(self.registry.verify("alpha")["result"], "MISSING")
-        self.add_bottle_dir("alpha")  # same name, new inode
+
+    def test_verify_flags_foreign_identity(self):
+        # A record pointing at another directory's (dev, ino) must be
+        # flagged regardless of inode-reuse behavior of the filesystem.
+        self.add_bottle_dir("alpha")
+        self.add_bottle_dir("beta")
+        self.registry.register(make_record("alpha", self.root))
+        beta_identity = {"dev": int(os.lstat(self.root / "beta").st_dev),
+                         "ino": int(os.lstat(self.root / "beta").st_ino)}
+        self.assertNotEqual(beta_identity, make_record("alpha", self.root)["identity"])
+        self._overwrite_record_identity("alpha", beta_identity)
         self.assertEqual(self.registry.verify("alpha")["result"], "IDENTITY_CHANGED")
 
     # -- reconciliation -------------------------------------------------------------

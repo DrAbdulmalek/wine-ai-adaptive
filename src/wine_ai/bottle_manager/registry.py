@@ -26,6 +26,13 @@ Security contract (bottle-manager integration, Phase B):
 - failures are fail-closed: the registry raises instead of guessing,
   and never deletes, repairs, or re-creates anything.
 
+Documented residual (honest limit, same class as SEC-01): identity
+revalidation compares ``(dev, ino)``; a same-filesystem swap that
+recycles the exact inode (observed when ``rmdir`` is immediately
+followed by ``mkdir`` on ext4/tmpfs) is indistinguishable from the
+original entry. Hostile same-uid processes remain out of scope; the
+mode/symlink checks narrow the practical window further.
+
 Deliberately out of scope (owner disposition, 2026-11-11 independent
 review of the rejected ``feature/bottle-manager`` draft): bottle
 deletion, Wine execution/initialization, and any automatic cleanup.
