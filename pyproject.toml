@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wine-ai-adaptive"
-version = "0.2.0"
+version = "1.0.0"
 description = "Local-first hardened diagnostic knowledge core for Wine on Linux"
 readme = "README.md"
 requires-python = ">=3.11"
