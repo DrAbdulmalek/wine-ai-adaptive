@@ -265,7 +265,7 @@ class CreateBottleSecurityTests(unittest.TestCase):
         self.assertNotIn("empty-not-prefix", {item["name"] for item in discovered})
         self.assertTrue(any(
             item.status == EvidenceStatus.UNPROVEN
-            and "missing markers" in item.message.lower()
+            and "missing markers" in item.summary.lower()
             for item in discovery_evidence
         ), discovery_evidence)
         Path(info["path"]).rmdir()
