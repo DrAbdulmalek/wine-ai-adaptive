@@ -34,7 +34,7 @@ def base_recipe(**overrides):
 
 def base_outcome(**overrides):
     outcome = {
-        'status': 'PROVEN',
+        'status': 'PARTIALLY_PROVEN',
         'confidence': 'high',
         'app_version': '2024 SR2',
         'wine_version': '9.0',
@@ -194,11 +194,18 @@ class RecordTestOutcomeTests(unittest.TestCase):
     def setUp(self):
         self.recipe = {'name': 'memoq', 'compatibility_status': 'UNPROVEN'}
 
-    def test_complete_record_produces_proven(self):
+    def test_complete_observation_never_claims_proven(self):
         finding = record_test_outcome(self.recipe, **base_outcome())
-        self.assertEqual(finding['status'], 'PROVEN')
+        self.assertEqual(finding['status'], 'PARTIALLY_PROVEN')
         self.assertEqual(finding['error_code'], 'RECIPE_MEMOQ')
         self.assertEqual(finding['confidence'], 'high')
+
+    def test_proven_is_rejected_even_with_all_metadata(self):
+        with self.assertRaisesRegex(ValueError, 'no trusted evidence verifier'):
+            record_test_outcome(
+                self.recipe,
+                **base_outcome(status='PROVEN'),
+            )
 
     def test_missing_required_fields_are_rejected(self):
         required = (
@@ -228,8 +235,14 @@ class RecordTestOutcomeTests(unittest.TestCase):
             'evidence_reference': 'x' * 257,
             'test_date': '2026-02-30',
         }
-        for field, value in {**cases, **extra_cases}.items():
-            with self.subTest(field=field):
+        for field, value in cases.items():
+            with self.subTest(field=field, value=value):
+                outcome = base_outcome(**{field: value})
+                with self.assertRaises(ValueError):
+                    record_test_outcome(self.recipe, **outcome)
+
+        for field, value in extra_cases.items():
+            with self.subTest(field=field, value=value):
                 outcome = base_outcome(**{field: value})
                 with self.assertRaises(ValueError):
                     record_test_outcome(self.recipe, **outcome)
@@ -248,12 +261,14 @@ class RecordTestOutcomeTests(unittest.TestCase):
 
 
 class RecipeEvidenceIntegrationTests(unittest.TestCase):
-    def test_test_outcome_proven_persists_through_knowledge_bridge(self):
+    def test_non_proven_test_observation_persists_through_knowledge_bridge(self):
         recipe = {
             'name': 'trados-studio',
             'compatibility_status': 'UNPROVEN',
         }
-        finding = record_test_outcome(recipe, **base_outcome())
+        finding = record_test_outcome(
+            recipe, **base_outcome(status='PARTIALLY_PROVEN')
+        )
         self.assertEqual(finding['error_code'], 'RECIPE_TRADOS_STUDIO')
 
         with tempfile.TemporaryDirectory() as directory:
@@ -268,13 +283,19 @@ class RecipeEvidenceIntegrationTests(unittest.TestCase):
             rows = store.list_records()
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]['error_code'], 'RECIPE_TRADOS_STUDIO')
-            self.assertEqual(rows[0]['evidence_status'], 'PROVEN')
+            self.assertEqual(rows[0]['evidence_status'], 'PARTIALLY_PROVEN')
             self.assertEqual(rows[0]['confidence'], 'high')
 
-    def test_recipe_layer_cannot_persist_proven_without_test_record(self):
+    def test_recipe_finding_cannot_emit_proven(self):
         recipe = {'name': 'trados-studio', 'compatibility_status': 'UNPROVEN'}
         with self.assertRaises(ValueError):
             recipe_finding(recipe, status='PROVEN', confidence='high')
+
+    def test_empty_test_list_is_independently_rejected(self):
+        recipe = {'name': 'memoq', 'compatibility_status': 'UNPROVEN'}
+        outcome = base_outcome(tests_performed=[])
+        with self.assertRaisesRegex(ValueError, 'non-empty list'):
+            record_test_outcome(recipe, **outcome)
 
 
 if __name__ == '__main__':
