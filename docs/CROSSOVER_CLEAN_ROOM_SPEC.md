@@ -2,7 +2,7 @@
 
 **معرّف الوثيقة:** WAA-CCRS-001
 **الإصدار:** 1.0.0-adapted.1
-**الحالة:** معتمدة كتصميم مرجعي (المصدر كان DRAFT — Architecture Review Required)
+**الحالة:** DRAFT — Awaiting Independent Architecture and Security Review
 **المشروع:** wine-ai-adaptive
 **لغة التنفيذ:** Python (المكتبة القياسية فقط)
 **المنصة الأساسية:** Linux / Manjaro KDE
@@ -238,21 +238,24 @@ class ExecutionBackend:
 | Restore | P2 | موافقة مستقلة | محجوز |
 | Delete | P3 | **معطّل افتراضيًا** | محجوز — لن يُنفَّذ دون قرار مالك صريح |
 
-### 6.5 المتطلبات الأمنية (من المصدر، مع تنفيذها الفعلي)
+### 6.5 المتطلبات الأمنية (الحالة بعد تدقيق P1)
 
-- رفض الروابط الرمزية غير المصرح بها — **منفَّذ**: مرشّح بادئة هو رابط
-  رمزي يُرفض ولا يُتتبع (`lstat` + فحص `S_ISLNK`).
-- التحقق من المسارات بعد canonicalization ومنع Path Traversal —
-  **منفَّذ**: تطبيع المسارات دون تتبع الروابط (`abspath`) ورفض
-  المرشح غير المجلد.
-- منع الكتابة خارج جذر البيانات المصرح به — **بنيوي**: لا توجد أي
-  عملية كتابة في طبقة الاكتشاف أصلًا.
-- التحقق من المساحة الحرة — يخص عمليات Create/Backup المحجوزة.
-- منع تعديل بادئة قيد الاستخدام — يخص العمليات الكتابية المحجوزة.
-- تسجيل العمليات — كل نتيجة تحمل قائمة أدلة مصنفة.
-- مراعاة TOCTOU — قراءة ترويسة `system.reg` عبر `os.open` بـ
-  `O_NOFOLLOW` بحيث لا يُتبع رابط رمزي يُزرع بين الفحص والقراءة؛
-  النافذة المتبقية موثقة في §14.
+- رفض الروابط الرمزية في **كل مكونات المسار** باستخدام فتح متدرج
+  للمجلدات عبر `dir_fd` و`O_DIRECTORY | O_NOFOLLOW`؛ لا يكفي
+  `abspath` أو `lstat` للمسار النهائي.
+- فتح علامات البادئة نسبةً إلى واصف مجلد البادئة، والتحقق من نوعها:
+  `drive_c` مجلد حقيقي، وملفات Registry ملفات عادية فقط.
+- قراءة `system.reg` بفتح غير حاجب (`O_NONBLOCK`) والتحقق بـ
+  `fstat` بعد الفتح؛ FIFO والملفات غير العادية تُرفض.
+- تصنيف `~/.wine` محميًا بأولوية مطلقة، بما في ذلك اكتشافه عبر
+  `WINEPREFIX` أو مسار مُطبَّع أو هوية المجلد (device/inode).
+- إزالة التكرار بهوية المجلد لا بالنص وحده، مع عدم تخفيض صفة الحماية.
+- مسح الجذر بواسطة `os.scandir` مع حد استهلاك فعلي: لا تُستهلك أكثر
+  من `MAX_SCAN_SUBDIRS` مدخلات؛ تُسجل النتائج بوصفها جزئية عند وجود
+  مدخلات إضافية.
+- اختبار المسارات المتداخلة والسباقات المتزامنة؛ يبقى أي تبديل لا
+  يمكن إثبات سلامته BLOCKED.
+- لا توجد عمليات كتابة أو subprocess في طبقة الاكتشاف.
 
 ---
 
@@ -412,16 +415,20 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 
 | التهديد القائم | المعالجة في طبقة الاكتشاف | الاختبار المثبت |
 |---|---|---|
-| T-فئة symlink (التتبع إلى مسار غير مقصود) | مرشّح بادئة رابط رمزي يُرفض؛ قراءة الترويسة بـ`O_NOFOLLOW` | `test_symlinked_prefix_candidate_is_rejected`, `test_reg_header_read_rejects_symlink` |
-| T-فئة الملفات غير الاعتيادية (FIFO/جهاز) | فحص `S_ISDIR` على `lstat` قبل أي فحص آخر | `test_non_directory_candidate_is_skipped` |
-| T-فئة البيانات الفاسدة | ترويسة سجل تُقرأ بحد 64 بايت وتُفسَّر بنمط صارم؛ ما لا يطابق يبقى UNPROVEN لا يُخمَّن | `test_unparsable_arch_header_stays_unproven` |
-| خطر إفشاء مسارات عبر التصدير | طبقة الاكتشاف **لا تكتب في أي مخزن**؛ أي ربط مستقبلي بالتخزين يمر عبر `prefix_id` المجرد فقط | بنيوي (لا استدعاء تخزين في الوحدة) |
+| symlink في أي مكوّن مسار | فتح متدرج بـ`dir_fd` و`O_NOFOLLOW`؛ رفض المسار عند ظهور رابط أو تبديل مكوّن | `test_symlink_in_parent_component_is_rejected`, `test_directory_swap_to_symlink_is_not_followed` |
+| FIFO أو نوع ملف غير عادي في Registry/drive_c | فحص النوع قبل الفتح، فتح Registry بـ`O_NONBLOCK`، ثم `fstat` | `test_fifo_system_reg_is_rejected_without_blocking`, `test_fifo_drive_c_is_rejected_as_wrong_marker_type`, `test_non_regular_registry_marker_is_rejected` |
+| رابط متداخل داخل drive_c/windows | اجتياز كل مجلد بمقبض dirfd ورفض symlink | `test_symlinked_nested_syswow64_is_not_trusted` |
+| تكرار مسار ~/.wine بمصدر مختلف | حماية حسب المسار المطبّع وهوية المجلد؛ dedup حسب device/inode | `test_wineprefix_equal_to_default_prefix_remains_protected`, `test_normalized_alias_of_default_prefix_remains_protected` |
+| استنزاف موارد تعداد الجذر | تعداد محدود إلى 64 مدخلاً + عنصر كشف overflow واحد؛ لا فرز للشجرة كاملة | `test_scan_processes_no_more_than_the_configured_limit` |
+| تلف/تبديل كائنات أثناء الفحص | إعادة التحقق من نوع الكائن بعد الفتح، والفتح الآمن للمجلدات | اختبارات السباق ونوع الملفات في `test_bottle_discovery_security.py` |
+| خطر إفشاء مسارات عبر التصدير | طبقة الاكتشاف **لا تكتب في أي مخزن** ولا تستدعي طبقة التخزين | مراجعة بنيوية واختبار عدم تغيير المحتويات والبيانات الوصفية |
 
-**الخطر المتبقي الموثق:** TOCTOU بين `lstat` والقراءة لا يُغلق كليًا
-من فضاء المستخدم (نفس الصياغة الصادقة في THREAT_MODEL/README)؛
-`O_NOFOLLOW` يضيّق النافذة عند قراءة الملفات. أي توسعة كتابية
-(Create/Clone/Backup) **تُلزم بإدخالات تهديد جديدة واختبارات قبل
-سطر كود أول** وفق AGENT_POLICY.
+**الخطر المتبقي الموثق:** لا تستطيع طبقة مستخدم عادية منع جهة ذات
+صلاحيات أعلى من تبديل mount namespace أو تعديل المجلدات بالتزامن
+بصورة مطلقة. لكن كل مكوّن مسار يُفتح بـ`O_NOFOLLOW`، ويعاد التحقق
+من نوع الكائن بعد الفتح؛ حالات التبديل التي تُكتشف تفشل مغلقة.
+أي توسعة كتابية (Create/Clone/Backup) **تُلزم بإدخالات تهديد جديدة
+واختبارات قبل سطر كود أول** وفق AGENT_POLICY.
 
 ---
 
@@ -431,8 +438,7 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 (3.11/3.12/3.13). كل الاختبارات على مجلدات مؤقتة (`TemporaryDirectory`)
 — لا مساس ببادئات حقيقية أبدًا.
 
-معايير قبول طبقة الاكتشاف P0 (مثبتة في `tests/unit/test_bottle_discovery.py`
-و`test_cli.py`):
+معايير قبول طبقة الاكتشاف P1 (تُثبت عبر `tests/unit/test_bottle_discovery.py` و`tests/unit/test_bottle_discovery_security.py` و`test_cli.py`):
 
 - بادئة سليمة win64/win32 تُكتشف وتُصنف معماريًا من ترويسة `system.reg`.
 - مرشح بلا `drive_c` أو بدون ملفات السجل لا يُعد بادئة.
@@ -444,7 +450,12 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 - ترويسة غير قابلة للتفسير تبقي المعمارية UNPROVEN.
 - تعارض الإشارات (ترويسة win32 مع وجود `syswow64`) يُسجل CONTRADICTED
   ولا يُحل بالتخمين.
-- سقف المسح (عدد المجلدات لكل جذر) يمنع فحص أشجار ضخمة ويُسجل كدليل.
+- سقف المسح يحد فعليًا عدد المدخلات المستهلكة إلى 64 لكل جذر، مع تسجيل overflow دون تعداد بقية الشجرة.
+- FIFO وملفات Registry غير العادية لا تسبب تعليقًا ولا تُقبل كعلامات صالحة.
+- لا يُتبع symlink في أي مكوّن أب أو داخل `drive_c/windows`.
+- `~/.wine` تبقى محمية عند اكتشافها عبر `WINEPREFIX` أو alias مطبّع.
+- اختبار تبديل مكوّن مسار إلى symlink يفشل مغلقًا.
+- فحص القراءة فقط لا يغير محتوى الملفات أو أنواعها أو أوضاعها أو أحجامها أو أوقات تعديلها.
 - أمر `wine-ai prefixes` يُخرج JSON صالحًا أو نصًا مقروءًا، ولا يخزن
   شيئًا ولا يفشل انهيارًا عند غياب كل البادئات.
 
@@ -454,8 +465,8 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 
 | المرحلة | المكوّن | النتيجة المطلوبة | الحالة |
 |---|---|---|---|
-| P0 | Architecture & Security Contract | عقد معماري وأمني | **منجزة** (هذه الوثيقة + LEGAL/THIRD-PARTY + THREAT_MODEL) |
-| P1 | Bottle Discovery | اكتشاف Prefixes دون تعديل | **منجزة** (`bottle_manager.discovery` + CLI) |
+| P0 | Architecture & Security Contract | عقد معماري وأمني | **PARTIALLY VERIFIED** — بانتظار اعتماد المراجعة المستقلة |
+| P1 | Bottle Discovery | اكتشاف Prefixes دون تعديل | **قيد التحصين والمراجعة** — لا يُفتح P2 قبل نجاح CI ومراجعة أمنية ثانية |
 | P2 | Bottle Manager | إدارة Prefixes مستقلة (بموافقة) | مخططة |
 | P3 | Recipe Engine | وصفات تثبيت آمنة | مخططة |
 | P4 | Runtime Manager | تشخيص التبعيات | مخططة |
@@ -471,3 +482,19 @@ PROVEN / PARTIALLY_PROVEN / UNPROVEN / CONTRADICTED / BLOCKED
 إلى التنفيذ دون مراجعة واختبارات وموافقة مستقلة — والعمليات الكتابية
 (Create/Clone/Backup/Restore/Delete) لا تُنفَّذ دون طبقة موافقة صريحة
 وسجل تدقيق، والحذف معطل افتراضيًا حتى بعد بناء الطبقة.
+
+
+---
+
+## 17) سجل تدقيق P1 — Hardening Round
+
+**الفرع:** `security/p1-bottle-discovery-hardening`  
+**الأساس:** `30eb110a75e866fc48828ae3f0388f095568c35d`  
+**الحالة:** تنفيذ مقترح على فرع مستقل؛ لا دمج في `main`.
+
+تتضمن الجولة معالجة FIFO، والتحقق من أنواع ملفات Registry، ومنع
+اجتياز الروابط الرمزية في مكونات المسار، وحماية هوية `~/.wine`،
+والتعداد المحدود فعليًا. لا يُعلن نجاح هذه الجولة إلا بعد ظهور CI
+ناجح ومراجعة مستقلة للالتزام الناتج. نتائج إنشاء الفرع أو رفع التغييرات
+ليست بديلاً عن الاختبارات.
+
