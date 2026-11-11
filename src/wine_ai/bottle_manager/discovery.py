@@ -258,7 +258,19 @@ def _inspect_candidate(
         return None, evidence
 
     try:
-        identity = _identity(directory_fd)
+        try:
+            identity = _identity(directory_fd)
+        except OSError as exc:
+            # A descriptor whose identity cannot be verified must not be
+            # treated as a usable candidate. The outer finally still closes
+            # directory_fd, and discovery may continue with other candidates.
+            evidence.append(Evidence(
+                "prefix_candidate", EvidenceStatus.BLOCKED,
+                "Candidate directory identity could not be verified safely",
+                source, {"path": str(absolute), "error": str(exc)},
+            ))
+            return None, evidence
+
         is_protected = (
             protected
             or (protected_identity is not None and identity == protected_identity)
