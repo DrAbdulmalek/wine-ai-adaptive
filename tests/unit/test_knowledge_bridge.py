@@ -80,6 +80,16 @@ class KnowledgeBridgeTests(unittest.TestCase):
                 distro="Manjaro",
             )
 
+    def test_rejects_proven_without_trusted_evidence_verifier(self):
+        with self.assertRaisesRegex(ValueError, "trusted evidence-verification"):
+            persist_findings(
+                self.store,
+                [{"category": "unknown", "status": "PROVEN"}],
+                wine_version="9.0",
+                distro="Manjaro",
+            )
+        self.assertEqual(self.store.list_records(), [])
+
     def test_rejects_non_list_findings(self):
         with self.assertRaises(TypeError):
             persist_findings(
