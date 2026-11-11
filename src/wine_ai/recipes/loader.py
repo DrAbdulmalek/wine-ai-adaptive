@@ -4,13 +4,15 @@ Recipes are data only. This module never initializes Wine, invokes
 winetricks, launches subprocesses, or executes recipe steps.
 
 Evidence discipline: recipe metadata and caller-supplied fields are not
-proof. Neither ``recipe_finding`` nor ``record_test_outcome`` may emit
-PROVEN. The current project has no trusted evidence-verification or
-attestation mechanism, and the KnowledgeStore schema has no field for a
-verifiable evidence binding. Recipe outcomes therefore remain
-UNPROVEN, PARTIALLY_PROVEN, or CONTRADICTED until such a mechanism is
-designed and independently reviewed. The generic persistence bridge
-also refuses PROVEN records.
+proof. ``recipe_finding`` refuses PROVEN unconditionally. The former
+metadata-only ``record_test_outcome`` API was removed because it could
+not verify report existence, authenticity, or correspondence to a test.
+The current project has no trusted evidence-verification or attestation
+mechanism, and the KnowledgeStore schema has no field for a verifiable
+evidence binding. Recipe outcomes therefore remain UNPROVEN,
+PARTIALLY_PROVEN, or CONTRADICTED until such a mechanism is designed and
+independently reviewed. The generic persistence bridge also refuses
+PROVEN records.
 '''
 
 import json
