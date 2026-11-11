@@ -536,6 +536,93 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             for item in evidence
         ))
 
+    def test_deep_component_chain_is_traversed_safely(self):
+        parent = self.home
+        for index in range(48):
+            parent = parent / f"component-{index:02d}"
+            parent.mkdir()
+        prefix = make_prefix(parent, "deep-prefix")
+
+        info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["path"], str(prefix))
+        self.assertEqual(info["architecture"], "win64")
+        self.assertTrue(any(item.status.value == "PROVEN" for item in evidence))
+
+    def test_permission_denied_intermediate_stat_is_blocked(self):
+        restricted = self.home / "restricted"
+        restricted.mkdir()
+        prefix = make_prefix(restricted, "prefix")
+        real_stat = os.stat
+
+        def deny_intermediate_stat(path, *args, **kwargs):
+            if path == "restricted" and kwargs.get("dir_fd") is not None:
+                raise PermissionError(errno.EACCES, "injected intermediate stat denial")
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(discovery.os, "stat", side_effect=deny_intermediate_stat):
+            info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNone(info)
+        self.assertTrue(any(item.status.value == "BLOCKED" for item in evidence))
+
+    def test_permission_denied_intermediate_open_is_blocked(self):
+        restricted = self.home / "restricted"
+        restricted.mkdir()
+        prefix = make_prefix(restricted, "prefix")
+        real_open = os.open
+
+        def deny_intermediate_open(path, flags, *args, **kwargs):
+            if path == "restricted" and kwargs.get("dir_fd") is not None:
+                raise PermissionError(errno.EACCES, "injected intermediate open denial")
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(discovery.os, "open", side_effect=deny_intermediate_open):
+            info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNone(info)
+        self.assertTrue(any(item.status.value == "BLOCKED" for item in evidence))
+
+    def test_not_directory_intermediate_component_is_unproven(self):
+        broken = self.home / "broken"
+        broken.mkdir()
+        prefix = make_prefix(broken, "prefix")
+        real_stat = os.stat
+
+        def inject_not_directory(path, *args, **kwargs):
+            if path == "broken" and kwargs.get("dir_fd") is not None:
+                raise NotADirectoryError(errno.ENOTDIR, "injected ENOTDIR")
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch.object(discovery.os, "stat", side_effect=inject_not_directory):
+            info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNone(info)
+        self.assertTrue(any(item.status.value == "UNPROVEN" for item in evidence))
+
+    def test_nested_permission_denied_is_unknown_not_absent(self):
+        prefix = make_prefix(self.home)
+        (prefix / "drive_c" / "windows" / "syswow64").mkdir(parents=True)
+        real_stat_at = discovery._stat_at
+
+        def deny_windows_component(fd, name):
+            if name == "windows":
+                raise PermissionError(errno.EACCES, "injected nested permission denial")
+            return real_stat_at(fd, name)
+
+        with mock.patch.object(discovery, "_stat_at", side_effect=deny_windows_component):
+            info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["syswow64_present"])
+        self.assertIsNone(info["arch_conflict"])
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "Nested Windows architecture path" in item.summary
+            for item in evidence
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()
