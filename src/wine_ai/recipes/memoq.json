@@ -1,0 +1,14 @@
+{
+  "name": "memoq",
+  "app": "memoQ translator pro",
+  "wine_version_suggestion": "wine-staging 9.x or newer (untested)",
+  "winetricks_verbs": ["dotnet48", "corefonts", "vcrun2019"],
+  "dependencies": [
+    ".NET Framework 4.8 (dotnet48)",
+    "Core Windows fonts (corefonts)",
+    "Visual C++ 2019 runtime (vcrun2019)"
+  ],
+  "compatibility_status": "UNPROVEN",
+  "last_tested": null,
+  "notes": "Draft recipe. memoQ is a .NET application with generally better community reports than Trados, but activation requires network access inside the bottle and nothing here is verified. Record every real test through the knowledge bridge."
+}

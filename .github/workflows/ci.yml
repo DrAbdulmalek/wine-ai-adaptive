@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "security/**", "fix/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "security/**", "fix/**"]
+  workflow_dispatch:
 
 jobs:
   tests:
@@ -12,10 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The package itself supports Python >= 3.8, but GitHub-hosted
-        # runners no longer provide EOL interpreters (3.8, 3.9), so CI
-        # exercises the actively supported versions instead.
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # The original components (evidence.py) use enum.StrEnum,
+        # which requires Python 3.11+; CI exercises the supported
+        # versions accordingly.
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,10 +26,39 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package and test dependencies
+      - name: Install package
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e .
 
-      - name: Run test suite
-        run: python -m pytest tests/ -v
+      - name: Byte-compile sources
+        run: python -m compileall -q src tests
+
+      # Stdlib-only runner (unittest): the project policy forbids
+      # external dependencies, including development extras.
+      - name: Run test suite (stdlib unittest)
+        run: python -m unittest discover -s tests/unit -p 'test_*.py' -v
+
+      - name: Build wheel
+        run: python -m pip wheel --no-deps --wheel-dir dist .
+
+      - name: Verify bundled recipe data in wheel
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected one wheel, found {len(wheels)}")
+          required = {
+              "wine_ai/recipes/trados-studio.json",
+              "wine_ai/recipes/memoq.json",
+          }
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              packaged = set(wheel.namelist())
+          missing = sorted(required - packaged)
+          if missing:
+              raise SystemExit(f"Recipe data missing from wheel: {missing}")
+          print("Both bundled recipe files are present in the wheel.")
+          PY

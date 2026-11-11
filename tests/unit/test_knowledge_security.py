@@ -121,6 +121,176 @@ class KnowledgeSecurityTests(unittest.TestCase):
         self.assertEqual(mode & 0o077, 0)
         self.assertEqual(len(store.list_records()), 1)
 
+    def test_parent_directory_mode_is_enforced_to_exactly_0700(self):
+        # A 0500 directory passes the old "no group/other bits" check
+        # but is not the required 0700 mode; the store must correct it
+        # before opening the database.
+        narrow = self.base / "narrow_dir"
+        narrow.mkdir(mode=0o700)
+        db_path = narrow / "test.sqlite3"
+
+        # Create a healthy database first (needs a writable directory).
+        store = KnowledgeStore(db_path)
+        store.add_record(**valid_record())
+
+        os.chmod(narrow, 0o500)
+        try:
+            reopened = KnowledgeStore(db_path)
+            mode = stat.S_IMODE(narrow.lstat().st_mode) & 0o777
+            self.assertEqual(mode, 0o700)
+            self.assertEqual(len(reopened.list_records()), 1)
+        finally:
+            os.chmod(narrow, 0o700)
+
+    def test_existing_database_file_is_tightened_before_use(self):
+        self.store.add_record(**valid_record())
+        os.chmod(self.db_path, 0o644)
+
+        reopened = KnowledgeStore(self.db_path)
+
+        mode = stat.S_IMODE(self.db_path.lstat().st_mode) & 0o777
+        self.assertEqual(mode, 0o600)
+        self.assertEqual(len(reopened.list_records()), 1)
+
+    # -- SQL-level CHECK enforcement (last line of defense) -----------------
+
+    def test_sqlite_engine_rejects_invalid_labels_without_python_api(self):
+        bad_versions = [
+            "../evil",          # path-like
+            " led",             # leading space
+            "x" * 65,           # over length cap
+            "tab\there",        # control character
+            "semi;colon",       # shell-ish punctuation
+        ]
+        for bad in bad_versions:
+            with self.subTest(value=bad):
+                connection = sqlite3.connect(str(self.db_path))
+                try:
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute(
+                            """
+                            INSERT INTO diagnostic_records (
+                                created_at, wine_version, distro,
+                                error_category, evidence_status,
+                                confidence, gpu_vendor
+                            )
+                            VALUES ('2026-01-01T00:00:00+00:00', ?,
+                                    'Arch', 'graphics', 'UNPROVEN',
+                                    'low', 'amd')
+                            """,
+                            (bad,),
+                        )
+                finally:
+                    connection.close()
+
+    def test_sqlite_engine_rejects_invalid_error_code_and_prefix(self):
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            bad_codes = [
+                "drop table",     # lower case + spaces
+                "0xGG",           # non-hex digits
+                "0xc0000005",     # lowercase hex (non-canonical)
+                "0x123456789",    # too long
+                "x" * 65,         # over length cap
+            ]
+            for bad in bad_codes:
+                with self.subTest(error_code=bad):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute(
+                            """
+                            INSERT INTO diagnostic_records (
+                                created_at, wine_version, distro,
+                                error_category, evidence_status,
+                                confidence, gpu_vendor, error_code
+                            )
+                            VALUES ('2026-01-01T00:00:00+00:00', '11.19',
+                                    'Arch', 'graphics', 'UNPROVEN',
+                                    'low', 'amd', ?)
+                            """,
+                            (bad,),
+                        )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO diagnostic_records (
+                        created_at, wine_version, distro,
+                        error_category, evidence_status,
+                        confidence, gpu_vendor, prefix_id
+                    )
+                    VALUES ('2026-01-01T00:00:00+00:00', '11.19',
+                            'Arch', 'graphics', 'UNPROVEN',
+                            'low', 'amd', '../evil')
+                    """
+                )
+        finally:
+            connection.close()
+
+    def test_sqlite_engine_accepts_canonical_values(self):
+        connection = sqlite3.connect(str(self.db_path))
+        try:
+            connection.execute(
+                """
+                INSERT INTO diagnostic_records (
+                    created_at, wine_version, distro,
+                    error_category, evidence_status,
+                    confidence, gpu_vendor, error_code, prefix_id
+                )
+                VALUES ('2026-01-01T00:00:00+00:00', 'Wine 9.0',
+                        'Manjaro Linux', 'graphics', 'UNPROVEN',
+                        'low', 'amd', '0xC0000005', 'game-prefix')
+                """
+            )
+            connection.commit()
+            count = connection.execute(
+                "SELECT COUNT(*) FROM diagnostic_records"
+            ).fetchone()[0]
+            self.assertEqual(count, 1)
+        finally:
+            connection.close()
+
+    # -- export re-validation gate -------------------------------------------
+
+    def test_validate_existing_record_accepts_healthy_row(self):
+        from wine_ai.knowledge.store import validate_existing_record
+
+        self.store.add_record(
+            **valid_record(error_code="0xC0000005", prefix_id="p1")
+        )
+        row = self.store.list_records()[0]
+        self.assertIs(validate_existing_record(row), row)
+
+    def test_validate_existing_record_rejects_tampered_rows(self):
+        from wine_ai.knowledge.store import validate_existing_record
+
+        self.store.add_record(**valid_record())
+        row = self.store.list_records()[0]
+
+        tampered = dict(row, created_at="not-a-timestamp")
+        with self.assertRaises(ValueError):
+            validate_existing_record(tampered)
+
+        tampered = dict(row, wine_version="../evil")
+        with self.assertRaises(ValueError):
+            validate_existing_record(tampered)
+
+        tampered = dict(row, error_category="bogus")
+        with self.assertRaises(ValueError):
+            validate_existing_record(tampered)
+
+        tampered = dict(row, error_code="0xc0000005")  # non-canonical
+        with self.assertRaises(ValueError):
+            validate_existing_record(tampered)
+
+        tampered = dict(row, raw_log="smuggled column")
+        with self.assertRaises(ValueError):
+            validate_existing_record(tampered)
+
+        tampered = dict(row)
+        del tampered["id"]
+        with self.assertRaises(ValueError):
+            validate_existing_record(tampered)
+
     # -- schema attacks -----------------------------------------------------
 
     def test_rejects_versioned_database_without_table(self):
@@ -231,6 +401,33 @@ class KnowledgeSecurityTests(unittest.TestCase):
                 self.assertEqual(
                     mode & 0o077, 0, f"sidecar {suffix} too open"
                 )
+
+    def test_rejects_symlinked_sidecar_files(self):
+        # A sidecar path (-wal/-shm/-journal) holding a symbolic link
+        # must be rejected instead of followed, and the symlink target
+        # must remain untouched.
+        self.store.add_record(**valid_record())
+
+        victim = self.base / "victim_sidecar.txt"
+        victim.write_text("innocent content")
+
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = Path(str(self.db_path) + suffix)
+            self.assertFalse(sidecar.exists())
+            os.symlink(victim, sidecar)
+
+            try:
+                with self.assertRaises(KnowledgeStoreError):
+                    KnowledgeStore(self.db_path)
+            finally:
+                self.assertTrue(sidecar.is_symlink())
+                os.unlink(sidecar)
+
+            self.assertEqual(victim.read_text(), "innocent content")
+
+        # After removing the symlinks the store must open normally.
+        reopened = KnowledgeStore(self.db_path)
+        self.assertEqual(len(reopened.list_records()), 1)
 
     def test_no_persistent_sidecars_after_writes(self):
         self.store.add_record(**valid_record())
