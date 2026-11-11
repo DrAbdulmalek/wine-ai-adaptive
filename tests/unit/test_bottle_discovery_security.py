@@ -379,6 +379,117 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             for item in evidence
         ))
 
+    def test_candidate_open_oserror_matrix_is_classified_safely(self):
+        prefix = make_prefix(self.home)
+        cases = (
+            (errno.EACCES, "BLOCKED"),
+            (errno.EPERM, "BLOCKED"),
+            (errno.ELOOP, "BLOCKED"),
+            (errno.ENOTDIR, "UNPROVEN"),
+            (errno.ENOENT, "UNPROVEN"),
+            (errno.ESTALE, "BLOCKED"),
+            (errno.EIO, "BLOCKED"),
+            (errno.EMFILE, "BLOCKED"),
+            (errno.ENFILE, "BLOCKED"),
+        )
+        for error_number, expected_status in cases:
+            with self.subTest(errno=error_number):
+                def fail_candidate(path):
+                    if Path(path) == prefix:
+                        raise OSError(error_number, os.strerror(error_number))
+                    raise AssertionError("unexpected path opened")
+
+                with mock.patch.object(
+                    discovery, "_open_dir_path", side_effect=fail_candidate
+                ):
+                    info, evidence = inspect_prefix(prefix, home=self.home)
+
+                self.assertIsNone(info)
+                self.assertTrue(any(
+                    item.status.value == expected_status
+                    for item in evidence
+                ))
+
+    def test_registry_open_oserrors_fail_closed(self):
+        prefix = make_prefix(self.home)
+        real_open = os.open
+        for error_number in (
+            errno.EACCES, errno.ELOOP, errno.ESTALE,
+            errno.EIO, errno.EMFILE, errno.ENFILE,
+        ):
+            with self.subTest(errno=error_number):
+                def fail_registry_open(path, flags, *args, **kwargs):
+                    if path == "system.reg" and kwargs.get("dir_fd") is not None:
+                        raise OSError(error_number, os.strerror(error_number))
+                    return real_open(path, flags, *args, **kwargs)
+
+                with mock.patch.object(
+                    discovery.os, "open", side_effect=fail_registry_open
+                ):
+                    info, evidence = inspect_prefix(prefix, home=self.home)
+
+                self.assertIsNone(info)
+                self.assertTrue(any(
+                    item.status.value == "BLOCKED"
+                    and "header could not be read safely" in item.summary
+                    for item in evidence
+                ))
+
+    def test_registry_read_oserror_closes_open_descriptor(self):
+        prefix = make_prefix(self.home)
+        real_read = os.read
+        opened_registry_fds = []
+
+        def track_registry_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if path == "system.reg" and kwargs.get("dir_fd") is not None:
+                opened_registry_fds.append(fd)
+            return fd
+
+        real_open = os.open
+
+        def fail_registry_read(fd, size):
+            if fd in opened_registry_fds:
+                raise OSError(errno.EIO, "injected registry read failure")
+            return real_read(fd, size)
+
+        with mock.patch.object(discovery.os, "open", side_effect=track_registry_open):
+            with mock.patch.object(discovery.os, "read", side_effect=fail_registry_read):
+                info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNone(info)
+        self.assertEqual(len(opened_registry_fds), 1)
+        with self.assertRaises(OSError) as raised:
+            os.fstat(opened_registry_fds[0])
+        self.assertEqual(raised.exception.errno, errno.EBADF)
+        self.assertTrue(any(item.status.value == "BLOCKED" for item in evidence))
+
+    def test_nested_component_open_oserror_is_unknown_not_absent(self):
+        prefix = make_prefix(self.home)
+        (prefix / "drive_c" / "windows" / "syswow64").mkdir(parents=True)
+        real_open = os.open
+
+        for error_number in (errno.EACCES, errno.ELOOP, errno.ESTALE, errno.EIO):
+            with self.subTest(errno=error_number):
+                def fail_windows_open(path, flags, *args, **kwargs):
+                    if path == "windows" and kwargs.get("dir_fd") is not None:
+                        raise OSError(error_number, os.strerror(error_number))
+                    return real_open(path, flags, *args, **kwargs)
+
+                with mock.patch.object(
+                    discovery.os, "open", side_effect=fail_windows_open
+                ):
+                    info, evidence = inspect_prefix(prefix, home=self.home)
+
+                self.assertIsNotNone(info)
+                self.assertIsNone(info["syswow64_present"])
+                self.assertIsNone(info["arch_conflict"])
+                self.assertTrue(any(
+                    item.status.value == "BLOCKED"
+                    and "Nested Windows architecture path" in item.summary
+                    for item in evidence
+                ))
+
 
 if __name__ == "__main__":
     unittest.main()
