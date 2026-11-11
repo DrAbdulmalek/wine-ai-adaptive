@@ -34,14 +34,17 @@ Security properties implemented here:
   ``prefix_id``). Version 3 rebuilds the table with full ``CHECK``
   coverage. Version 4 adds two further optional columns with their own
   ``CHECK`` coverage: ``launcher`` (an allow-listed launcher name, never
-  a path) and ``prefix_hash`` (a truncated SHA-256 pseudonym of the
-  prefix path — privacy-preserving by construction: the raw path is
-  never stored). Version 1, 2 and 3 databases are upgraded by atomic
-  migrations whose pre-checks (stored CREATE statement and column
-  set) run *inside* the same ``BEGIN IMMEDIATE`` transaction as the
-  migration itself; any mismatch or error rolls back and leaves the
-  database untouched. The canonical schema is tracked in
-  ``docs/decisions/2026-11-12-schema-canonical-v3-v4.md``.
+  a path) and ``prefix_hash`` (a machine-keyed HMAC-SHA256 pseudonym
+  of the prefix path, produced by ``environment.snapshot.prefix_hash_of``:
+  guessing-resistant while the local key stays on the machine, never
+  exported, and NOT anonymity — same-machine correlation is by design;
+  the raw path is never accepted or stored). Version 1, 2 and 3
+  databases are upgraded by atomic migrations whose pre-checks (stored
+  CREATE statement and column set) run *inside* the same ``BEGIN
+  IMMEDIATE`` transaction as the migration itself; any mismatch or
+  error rolls back and leaves the database untouched. The canonical
+  schema is tracked in
+  ``docs/decisions/2026-11-11-schema-canonical-v3-v4.md``.
 
 Documented limitations (these are NOT fully eliminated):
 

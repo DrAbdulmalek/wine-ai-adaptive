@@ -68,10 +68,13 @@ def persist_findings(
     ``launcher`` is an optional allow-listed launcher name (one of
     ``lutris``/``bottles``/``heroic``/``steam``/``wine``/``unknown`` —
     never a path or version string) and ``prefix_hash`` is an optional
-    truncated SHA-256 pseudonym of the prefix path (lowercase hex,
-    16..64 chars). The raw prefix path is never accepted; callers hash
-    it themselves (see ``environment.snapshot``). Findings may override
-    both per finding via their own ``launcher``/``prefix_hash`` entry.
+    machine-keyed HMAC-SHA256 pseudonym of the prefix path (lowercase
+    hex, 16..64 chars; 32 on current generation). The raw prefix path
+    is never accepted; callers produce the pseudonym themselves via
+    ``environment.snapshot.prefix_hash_of``. The pseudonym is
+    local-only: it is not anonymity and it is never exported. Findings
+    may override both per finding via their own ``launcher``/
+    ``prefix_hash`` entry.
 
     Findings may carry their category under either ``error_category``
     or ``category``; the structured key ``error_category`` wins when

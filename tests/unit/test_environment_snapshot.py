@@ -1,8 +1,11 @@
 """Tests for the read-only environment snapshot collector."""
 
+import hashlib
+import hmac
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from wine_ai.environment.snapshot import (
     EnvironmentSnapshot,
@@ -11,6 +14,7 @@ from wine_ai.environment.snapshot import (
     detect_wine_version,
     distro_name,
     parse_wine_version,
+    prefix_hash_of,
 )
 
 
@@ -50,6 +54,34 @@ class WineVersionTests(unittest.TestCase):
             detect_wine_version({"WINE_VERSION": "wine-9.0"}), "9.0"
         )
         self.assertIsNone(detect_wine_version({}))
+
+    def test_allow_exec_false_never_spawns_subprocess(self):
+        # The runtime contract: with allow_exec=False, no subprocess is
+        # ever spawned even when wine is installed and no hint exists.
+        with mock.patch(
+            "wine_ai.environment.snapshot.subprocess.run"
+        ) as run_mock:
+            self.assertIsNone(detect_wine_version({}, allow_exec=False))
+            run_mock.assert_not_called()
+
+    def test_allow_exec_false_still_honors_environment_hint(self):
+        self.assertEqual(
+            detect_wine_version(
+                {"WINE_VERSION": "wine-9.0"}, allow_exec=False,
+            ),
+            "9.0",
+        )
+
+    def test_collect_allow_exec_false_never_spawns(self):
+        with mock.patch(
+            "wine_ai.environment.snapshot.subprocess.run"
+        ) as run_mock:
+            snapshot = collect(
+                env={}, prefix_path="/home/u/pfx", allow_exec=False,
+            )
+            run_mock.assert_not_called()
+        self.assertEqual(snapshot.wine_version, "unknown")
+        self.assertEqual(snapshot.prefix_name, "pfx")
 
 
 class DistroNameTests(unittest.TestCase):
@@ -154,13 +186,48 @@ class BareWineLauncherTests(unittest.TestCase):
 
 class PrefixHashTests(unittest.TestCase):
 
-    def test_hash_is_truncated_hex_without_path_data(self):
+    def test_hash_is_keyed_hex_without_path_data(self):
         hash_value = collect(prefix_path="/home/user/My Prefix").prefix_hash
         self.assertIsNotNone(hash_value)
-        self.assertEqual(len(hash_value), 16)
-        self.assertRegex(hash_value, r"^[a-f0-9]{16}$")
+        self.assertEqual(len(hash_value), 32)
+        self.assertRegex(hash_value, r"^[a-f0-9]{32}$")
         self.assertNotIn("/", hash_value)
         self.assertNotIn("My Prefix", hash_value)
+
+    def test_hash_is_hmac_not_plain_sha256(self):
+        # The pseudonym must be keyed: a plain unsalted SHA-256 of the
+        # absolute path is guessable offline (audit finding).
+        keyed = prefix_hash_of("/home/u/a", key=b"unit-test-key")
+        expected = hmac.new(
+            b"unit-test-key", b"/home/u/a", hashlib.sha256
+        ).hexdigest()[:32]
+        plain = hashlib.sha256(b"/home/u/a").hexdigest()[:32]
+        self.assertIsNotNone(keyed)
+        self.assertEqual(keyed, expected)
+        self.assertNotEqual(keyed, plain)
+
+    def test_hash_is_machine_scoped_not_cross_machine(self):
+        # Different local keys (i.e. different machines) must never
+        # produce the same pseudonym for the same path; the same key
+        # must stay stable (intended same-machine correlation).
+        first = prefix_hash_of("/home/u/pfx", key=b"key-machine-1")
+        second = prefix_hash_of("/home/u/pfx", key=b"key-machine-2")
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            first, prefix_hash_of("/home/u/pfx", key=b"key-machine-1")
+        )
+
+    def test_hash_fail_closed_without_local_key(self):
+        # No readable machine identifier -> no pseudonym at all.
+        with mock.patch(
+            "wine_ai.environment.snapshot._MACHINE_ID_PATHS",
+            ("/nonexistent/machine-id",),
+        ):
+            self.assertIsNone(prefix_hash_of("/home/u/pfx"))
+
+    def test_hash_rejects_non_bytes_key(self):
+        self.assertIsNone(prefix_hash_of("/home/u/pfx", key="text"))
+        self.assertIsNone(prefix_hash_of("/home/u/pfx", key=b""))
 
     def test_hash_is_deterministic_and_path_sensitive(self):
         first = collect(prefix_path="/home/user/a").prefix_hash
@@ -175,7 +242,6 @@ class PrefixHashTests(unittest.TestCase):
         self.assertIsNone(snapshot.to_prefix_hash())
 
     def test_hash_helper_rejects_garbage(self):
-        from wine_ai.environment.snapshot import prefix_hash_of
         self.assertIsNone(prefix_hash_of(""))
         self.assertIsNone(prefix_hash_of("   "))
         self.assertIsNone(prefix_hash_of(None))
@@ -200,7 +266,7 @@ class PrefixHashTests(unittest.TestCase):
             )
             record = store.list_records()[0]
             self.assertEqual(record["launcher"], "wine")
-            self.assertEqual(len(record["prefix_hash"]), 16)
+            self.assertEqual(len(record["prefix_hash"]), 32)
 
 
 if __name__ == "__main__":

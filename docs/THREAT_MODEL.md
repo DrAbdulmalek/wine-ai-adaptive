@@ -30,6 +30,7 @@
 | T12 | تسرب خصوصية: تخزين سجلات خام أو مسارات أو نصوص عشوائية | قوائم مسموحة لكل حقل + قيود `CHECK` في SQLite تغطي **كل** الحقول المنظمة (v3: `wine_version`, `distro`, `error_code`, `prefix_id` أيضًا) كخط دفاع أخير + إعادة تحقق كل صف عند التصدير | `_prepare_record`, مخطط v3, `validate_existing_record` | `test_rejects_raw_log_argument`, `test_rejects_path_in_version`, `test_rejects_arbitrary_category`, `test_extra_fields_are_rejected`, `test_sqlite_engine_rejects_invalid_labels_without_python_api`, `test_export_blocked_when_tampered_row_detected` | PROVEN |
 | T13 | كتابة جزئية للدفعة عند فشل سجل في منتصفها | التحقق الكامل قبل المعاملة، ثم إدراج ذري بتراجع كامل | `add_records_atomic` | `test_invalid_second_record_rejects_entire_batch`, `test_database_failure_rolls_back_entire_batch` | PROVEN |
 | T14 | ترحيل مخطط متعثّر أو متلاعب به (سلسلة v1→v2→v3) يترك القاعدة في حالة مكسورة | سلسلة ترحيل ذرّية: فحوص البصمة والأعمدة **داخل** معاملة `BEGIN IMMEDIATE` نفسها (بلا نافذة تحقق-ثم-نفّذ)؛ v2→v3 إعادة بناء جدول ترفض أي صف يخالف قيود v3 وتتراجع كليًا | `_migrate_v1_to_v2`, `_migrate_v2_to_v3`, `_initialize` | `test_v1_database_migrates_and_preserves_rows`, `test_v2_database_migrates_to_v3_preserving_rows_and_ids`, `test_v2_to_v3_migration_rejects_poisoned_rows_atomically`, `test_tampered_v1_sql_is_refused_without_migration`, `test_v1_with_extra_column_is_refused` | PROVEN |
+| T15 | تخمين مسارات البادئة من `prefix_hash`، أو ربط سجلات عبر الأجهزة، أو تسرب البصمة ضمن حزم المشاركة | البصمة `HMAC-SHA256` مفتاحها مشتق من مُعرّف الآلة المحلي (لا يغادر الجهاز ولا يُخزَّن)، مقصوصة 128 بت؛ إنتاج fail-closed عند غياب المُعرّف؛ ولا التصدير لأن قائمة سماح التصدير لا تتضمن الحقل أصلًا (مُثبت باختبار انحدار) — **ليست إخفاء هوية**: الربط عبر الجلسات على نفس الجهاز مقصود بالتصميم، وأي عملية محلية تقرأ مُعرّف الآلة تستطيع إعادة الحساب (وبإمكانها أصلًا قراءة المسار الخام) | `environment.snapshot.prefix_hash_of`, `portability.EXPORT_FIELDS` | `test_hash_is_hmac_not_plain_sha256`, `test_hash_is_machine_scoped_not_cross_machine`, `test_hash_fail_closed_without_local_key`, `test_prefix_hash_is_never_exported` | PROVEN |
 
 ## المخاطر المتبقية المعلنة (لا تُخفى ولا تُبالغ فيها)
 
@@ -44,6 +45,11 @@
    بـ`umask 077`.
 4. التهيئة تغيّر `umask` العملية مؤقتًا؛ أنشئ المخازن قبل الاعتماد على
    إنشاء ملفات متزامن في خيوط أخرى.
+5. قواعد البيانات المحلية التي أُنشئت قبل إعادة تصميم `prefix_hash`
+   (بصمات SHA-256 غير المملحة مقصوصة 16 محرفًا) قد تحمل قيمًا قديمة
+   لا يمكن إعادة اشتقاقها ولا ترقيتها في مكانها (المسار الخام غير
+   محفوظ)؛ القيم الجديدة كلها HMAC. انظر سجل القرار
+   `2026-11-11-prefix-hash-hmac-and-runtime-contract.md`.
 
 ## مصادر هذا النموذج
 
@@ -57,6 +63,9 @@
   (فحص قبل المساس، معاملة ذرية، فشل يُبقي الإصدار القديم سليمًا) والتحذير
   بعدم رفع رقم الإصدار قبل اختبار الترحيل على قاعدة v1 حقيقية.
 - التدقيق الداخلي الموثق في [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
+- التدقيق الأمني المستقل (جلسة ChatGPT، 2026-11-11) الذي نفى ادعاء
+  إخفاء الهوية للبصمة غير المملحة وأعاد تصميمها (T15) — التصريف في
+  [reviews/EXTERNAL_REVIEWS.md](reviews/EXTERNAL_REVIEWS.md) §10.
 - سياسة عمل المساهمين والوكلاء في [AGENT_POLICY.md](AGENT_POLICY.md).
 
 أي تغيير مستقبلي على طبقة التخزين يجب أن يحدّث هذا الجدول ويضيف

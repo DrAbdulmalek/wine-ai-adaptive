@@ -1,7 +1,11 @@
 # Decision record: canonical store schema (v3 → v4) and the fate of the v0.3.1 package
 
-- **Date:** 2026-11-12
+- **Date:** 2026-11-11
 - **Status:** Accepted (implemented on `feature/deepseek-review-enhancements`, PR #4)
+  — date corrected from an erroneous 2026-11-12 during the independent
+  audit disposition (see
+  `2026-11-11-prefix-hash-hmac-and-runtime-contract.md`; the
+  implementing commits and CI evidence are dated 2026-11-11).
 - **Deciders:** repository maintainer (DrAbdulmalek) via the
   "add and develop" directive chain; executed by the engineering agent.
 
@@ -49,12 +53,19 @@ optional `CHECK`-covered columns:
   allow-listed categorical label; never a path, never a version
   string.
 - `prefix_hash TEXT` — `CHECK (prefix_hash IS NULL OR (length BETWEEN
-  16 AND 64 AND lowercase hex))`. A truncated SHA-256 pseudonym of the
-  absolute prefix path produced by `environment.snapshot.prefix_hash_of`.
-  The raw path is never accepted or stored.
+  16 AND 64 AND lowercase hex))`. A machine-keyed HMAC-SHA256
+  pseudonym of the absolute prefix path produced by
+  `environment.snapshot.prefix_hash_of` (32 lowercase hex on current
+  generation). The raw path is never accepted or stored.
 
-Rationale: privacy-preserving cross-session correlation (per the
-package's design intent) without weakening any v3 guarantee.
+Rationale: cross-session correlation on the same machine, resistant
+  to offline path-guessing while the local key stays on the machine —
+  without weakening any v3 guarantee. *(Amended: the original text
+  claimed a plain truncated SHA-256 was "privacy-preserving by
+  construction"; the independent audit contradicted that claim — an
+  unsalted, truncated fingerprint permits path-guessing and cross-
+  session linking. The redesign and the honest limits are recorded in
+  `2026-11-11-prefix-hash-hmac-and-runtime-contract.md`.)*
 
 ### D2 — v3 → v4 migration copies the v2 → v3 rebuild pattern exactly
 
@@ -76,7 +87,7 @@ v1→v2→v3→v4 and v2→v3→v4 run automatically on open.
 | Bridge key fix (`error_category` wins over `category`) | Adopted in `knowledge/bridge.py` with precedence and a normalization-to-`unknown` contract; covered by tests |
 | `launcher` batch/finding parameter, allow-list validated | Adopted; per-finding override supported |
 | `prefix_hash` batch/finding parameter, `^[a-f0-9]{16,64}$` | Adopted; raw paths rejected |
-| Snapshot `prefix_hash` (truncated SHA-256, 16 hex) | Adopted in `environment/snapshot.py` (`prefix_hash_of`, `to_prefix_hash`) |
+| Snapshot `prefix_hash` (truncated SHA-256, 16 hex) | Adopted in `environment/snapshot.py` (`prefix_hash_of`, `to_prefix_hash`) — later redesigned to a machine-keyed HMAC (see the amendment record) |
 | Bare-Wine launcher value (`WINEPREFIX` set, no launcher marker → `"wine"`) | Adopted (`BARE_WINE_LAUNCHER`, `detect_launcher(..., prefix_declared=)`) |
 | Regression suite (reopen-fresh, id-continuity, fail-closed legacy rows, `launcher` CHECK enforcement) | Adopted as `tests/unit/test_store_v4_migration.py` against the v3→v4 chain |
 | Query by launcher | Adopted as `KnowledgeStore.find_by_launcher` |

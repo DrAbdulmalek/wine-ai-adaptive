@@ -88,6 +88,18 @@ class ExportTests(unittest.TestCase):
         package = export_records(self.store, include_prefix_id=True)
         self.assertNotIn("prefix_id", package["records"][0])
 
+    def test_prefix_hash_is_never_exported(self):
+        # Even opt-in for prefix_id must never carry prefix_hash: it is
+        # a local pseudonym of a local path and must not leave the
+        # machine (audit finding: "must not be exported in share
+        # packages").
+        _add(self.store, prefix_id="abc", prefix_hash="a" * 32)
+        default = export_records(self.store)
+        self.assertNotIn("prefix_hash", default["records"][0])
+        opt_in = export_records(self.store, include_prefix_id=True)
+        self.assertNotIn("prefix_hash", opt_in["records"][0])
+        self.assertIn("prefix_id", opt_in["records"][0])
+
     def test_no_full_timestamp(self):
         _add(self.store)
         package = export_records(self.store)

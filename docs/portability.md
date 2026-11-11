@@ -62,7 +62,12 @@ Note (schema v4): the store now carries two further local-only columns,
 `launcher` and `prefix_hash`. They are **never** exported: packages
 keep the exact field set above, so packages produced by v0.2.0 remain
 byte-compatible with the same `package_version`, and `prefix_hash` — a
-pseudonym of a local path — never leaves the machine.
+machine-keyed HMAC pseudonym of a local path — never leaves the
+machine. This is enforced by the export allow-list itself and pinned
+by `test_prefix_hash_is_never_exported`; the pseudonym is not anonymity
+(it links sessions on the same machine by design) but it cannot be
+guessed offline without the local key, which never leaves the machine
+(see `docs/decisions/2026-11-11-prefix-hash-hmac-and-runtime-contract.md`).
 
 ## Export
 

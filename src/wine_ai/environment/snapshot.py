@@ -3,17 +3,36 @@
 Inspired by the prefix/launcher context collection of tools like
 winetop, reimplemented from scratch with the standard library only.
 
-The collector is strictly read-only: it never modifies anything, never
-reads personal files, and never stores full prefix paths. The prefix is
-reduced to an abstract display name (its base name), which is the only
-value safe enough to persist as ``prefix_id``, plus a truncated SHA-256
-pseudonym of the absolute path (``prefix_hash``) which enables
-cross-session correlation without ever storing the path itself.
+Privacy contract
+----------------
+The collector never modifies anything, never reads personal files, and
+never stores full prefix paths. The prefix is reduced to an abstract
+display name (its base name), the only value safe enough to persist as
+``prefix_id``. The absolute path can additionally be reduced to
+``prefix_hash``: a truncated *HMAC-SHA256* pseudonym keyed by a local
+machine identifier. This enables correlation across sessions on the
+same machine while making offline path-guessing infeasible for anyone
+who only holds the hash. Stated limits: it is NOT anonymity; same-
+machine linking is by design; any local process able to read the
+machine identifier can recompute it; different machines never produce
+the same pseudonym for the same path; and the value never leaves the
+machine (the export allow-list never includes it). When no machine
+identifier is readable, no pseudonym is produced at all (fail-closed).
+
+Runtime contract
+----------------
+"Read-only" describes effects on the Wine prefix and the diagnostic
+subject: nothing is modified. It does NOT mean "no external programs":
+``detect_wine_version`` (and therefore ``collect``) may run ``wine
+--version`` once with a short timeout when no ``WINE_VERSION``-style
+environment hint is present. Pass ``allow_exec=False`` to forbid
+subprocess execution entirely (environment hints only).
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import re
 import shutil
@@ -39,8 +58,19 @@ LAUNCHERS = ("lutris", "bottles", "heroic", "steam", "wine", "unknown")
 # not-detected "unknown" value.
 BARE_WINE_LAUNCHER = "wine"
 
-# Length of the truncated SHA-256 prefix pseudonym (hex characters).
-PREFIX_HASH_CHARS = 16
+# Length of the truncated HMAC-SHA256 prefix pseudonym (hex
+# characters, 128 bits). The store's CHECK (16..64 lowercase hex)
+# accepts this length unchanged.
+PREFIX_HASH_CHARS = 32
+
+# Domain-separation label for deriving the local pseudonym key, so the
+# key can never collide with any other use of the machine identifier.
+_PREFIX_HASH_KEY_LABEL = b"wine-ai-adaptive/prefix-hash/v1"
+
+# Local machine identifiers used to derive the pseudonym key. They are
+# read only, never stored and never leave the machine. If none is
+# readable, no pseudonym is produced at all (fail-closed).
+_MACHINE_ID_PATHS = ("/etc/machine-id", "/var/lib/dbus/machine-id")
 
 OS_RELEASE_PATH = Path("/etc/os-release")
 
@@ -55,7 +85,7 @@ class EnvironmentSnapshot:
     prefix_name: str           # abstract base name, never a full path
     launcher: str              # lutris | bottles | heroic | steam | wine | unknown
     distro: str                # os-release ID only, e.g. "manjaro"
-    prefix_hash: Optional[str] = None  # truncated SHA-256 of the abs path
+    prefix_hash: Optional[str] = None  # machine-keyed HMAC of abs path
 
     def __post_init__(self):
         for field_name in ("wine_version", "prefix_name", "distro"):
@@ -128,21 +158,56 @@ def detect_launcher(
     return "unknown"
 
 
-def prefix_hash_of(prefix_path: str) -> Optional[str]:
-    """Truncated SHA-256 pseudonym of a prefix path, or None.
+def _prefix_hash_key() -> Optional[bytes]:
+    """Derive the local pseudonym key from the machine identifier.
 
-    The absolute path is hashed, never stored: 16 lowercase hex
-    characters are enough for correlation across sessions while
-    revealing nothing about directory names or users. The input is
-    never kept in memory beyond this call.
+    The identifier itself never leaves the machine and is never stored;
+    only a domain-separated SHA-256 mixture of it serves as the HMAC
+    key. Returns ``None`` when no identifier is readable: fail-closed,
+    no pseudonym at all.
+    """
+    for path in _MACHINE_ID_PATHS:
+        try:
+            raw = Path(path).read_bytes().strip()
+        except OSError:
+            continue
+        if raw:
+            return hashlib.sha256(
+                _PREFIX_HASH_KEY_LABEL + b"\x00" + raw
+            ).digest()
+    return None
+
+
+def prefix_hash_of(
+    prefix_path: str, key: Optional[bytes] = None,
+) -> Optional[str]:
+    """Machine-keyed HMAC pseudonym of a prefix path, or None.
+
+    The absolute path is hashed and never stored or returned: 32
+    lowercase hex characters (128 bits of HMAC-SHA256) keyed by the
+    local machine identifier allow correlation across sessions *on the
+    same machine* while making offline path-guessing infeasible for an
+    attacker who only holds the hash. Same-machine linking is by
+    design; different machines never produce the same pseudonym for
+    the same path, so no cross-machine correlation is possible.
+
+    ``key`` overrides the derived local key (tests use this). Without
+    any usable key the pseudonym is not produced at all (fail-closed).
+    The input path is never kept in memory beyond this call.
     """
     if not isinstance(prefix_path, str) or not prefix_path.strip():
+        return None
+    if key is None:
+        key = _prefix_hash_key()
+    if not isinstance(key, (bytes, bytearray)) or not key:
         return None
     try:
         absolute = os.path.abspath(prefix_path)
     except (OSError, ValueError):
         return None
-    digest = hashlib.sha256(absolute.encode("utf-8", "replace")).hexdigest()
+    digest = hmac.new(
+        bytes(key), absolute.encode("utf-8", "replace"), hashlib.sha256
+    ).hexdigest()
     return digest[:PREFIX_HASH_CHARS]
 
 
@@ -154,17 +219,25 @@ def parse_wine_version(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def detect_wine_version(env: Mapping[str, str]) -> Optional[str]:
+def detect_wine_version(
+    env: Mapping[str, str], *, allow_exec: bool = True,
+) -> Optional[str]:
     """Read-only Wine version detection.
 
-    Checks WINE_VERSION-style environment hints first, then falls back
-    to running ``wine --version`` with a short timeout. Never raises:
-    an unavailable Wine simply yields ``None``.
+    Checks WINE_VERSION-style environment hints first. When no hint is
+    present and ``allow_exec`` is True (the default), it runs ``wine
+    --version`` once with a short timeout — one short-lived external
+    program, nothing modified. With ``allow_exec=False`` no subprocess
+    is ever spawned: environment hints only, otherwise ``None``.
+    Never raises: an unavailable Wine simply yields ``None``.
     """
     hint = env.get("WINE_VERSION", "") if isinstance(env, Mapping) else ""
     version = parse_wine_version(hint)
     if version:
         return version
+
+    if not allow_exec:
+        return None
 
     executable = shutil.which("wine")
     if not executable:
@@ -198,18 +271,23 @@ def distro_name(path: os.PathLike = OS_RELEASE_PATH) -> str:
 def collect(
     env: Optional[Mapping[str, str]] = None,
     prefix_path: Optional[str] = None,
+    *,
+    allow_exec: bool = True,
 ) -> EnvironmentSnapshot:
     """Collect a structured snapshot of the current environment.
 
     ``prefix_path`` is reduced to its base name before anything is
-    stored; the full path is never kept in memory beyond this call. A
-    truncated SHA-256 pseudonym of the absolute path is kept as
-    ``prefix_hash`` for cross-session correlation without ever storing
-    the path itself.
+    stored; the full path is never kept in memory beyond the hash call.
+    ``prefix_hash`` is the machine-keyed HMAC pseudonym produced by
+    ``prefix_hash_of`` (local cross-session correlation; never
+    exported). ``allow_exec`` controls whether ``wine --version`` may
+    be executed when no environment hint is present (see
+    ``detect_wine_version``): True (default) allows the one external
+    call, False forbids any subprocess.
     """
     env = env if env is not None else os.environ
 
-    wine_version = detect_wine_version(env) or "unknown"
+    wine_version = detect_wine_version(env, allow_exec=allow_exec) or "unknown"
     prefix_declared = bool(
         isinstance(env, Mapping) and env.get("WINEPREFIX", "").strip()
     ) or bool(prefix_path)
