@@ -39,8 +39,11 @@ def collect_environment():
 
     if wine_path:
 
+        # run_read_only resolves the bare allow-listed command itself and
+        # verifies the resolved executable before execution. Passing the
+        # absolute path returned by shutil.which would correctly be rejected.
         result = run_read_only([
-            wine_path,
+            "wine",
             "--version",
         ])
 
