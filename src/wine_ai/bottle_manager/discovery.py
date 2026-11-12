@@ -223,13 +223,14 @@ def _inspect_candidate(
     origin: str,
     protected: bool,
     protected_identity: tuple[int, int] | None = None,
+    candidate_fd: int | None = None,
 ) -> tuple[dict | None, list[Evidence]]:
     evidence: list[Evidence] = []
     source = f"bottle_manager.discovery:{origin}"
     absolute = Path(os.path.abspath(path))
 
     try:
-        directory_fd = _open_dir_path(absolute)
+        directory_fd = os.dup(candidate_fd) if candidate_fd is not None else _open_dir_path(absolute)
     except _UnsafePathError as exc:
         evidence.append(Evidence(
             "prefix_candidate", EvidenceStatus.BLOCKED,
@@ -401,13 +402,15 @@ def discover_prefixes(
     results: list[dict] = []
     seen: dict[tuple[int, int], dict] = {}
 
-    def emit(candidate: Path, origin: str, protected: bool = False) -> None:
+    def emit(candidate: Path, origin: str, protected: bool = False,
+             candidate_fd: int | None = None) -> None:
         absolute = Path(os.path.abspath(candidate))
         info, item_evidence = _inspect_candidate(
             absolute,
             origin,
             protected=(protected or absolute == protected_path),
             protected_identity=protected_identity,
+            candidate_fd=candidate_fd,
         )
         evidence.extend(item_evidence)
         if info is None:
@@ -454,26 +457,59 @@ def discover_prefixes(
             return
 
         try:
-            names: list[str] = []
+            entries_to_scan: list[tuple[str, int, int, int]] = []
             overflow = False
             try:
                 with os.scandir(root_fd) as entries:
                     for entry in entries:
-                        if len(names) == MAX_SCAN_SUBDIRS:
+                        if len(entries_to_scan) == MAX_SCAN_SUBDIRS:
                             overflow = True
                             break
-                        names.append(entry.name)
+                        entry_info = entry.stat(follow_symlinks=False)
+                        entries_to_scan.append((
+                            entry.name, entry_info.st_dev, entry_info.st_ino,
+                            entry_info.st_mode,
+                        ))
             except OSError as exc:
                 evidence.append(Evidence(
                     "prefix_discovery", EvidenceStatus.BLOCKED,
-                    "Container root could not be listed",
+                    "Container root could not be listed safely",
                     f"bottle_manager.discovery:{origin}",
                     {"path": str(root), "error": str(exc)},
                 ))
                 return
 
-            for name in sorted(names):
-                emit(root / name, origin)
+            for name, expected_dev, expected_ino, entry_mode in sorted(entries_to_scan):
+                if stat.S_ISLNK(entry_mode) or not stat.S_ISDIR(entry_mode):
+                    continue
+                candidate_fd = None
+                try:
+                    candidate_fd = os.open(name, _directory_flags(), dir_fd=root_fd)
+                    opened = os.fstat(candidate_fd)
+                    if (
+                        not stat.S_ISDIR(opened.st_mode)
+                        or (opened.st_dev, opened.st_ino) != (expected_dev, expected_ino)
+                    ):
+                        evidence.append(Evidence(
+                            "prefix_candidate", EvidenceStatus.BLOCKED,
+                            "Container entry changed identity between enumeration and open",
+                            f"bottle_manager.discovery:{origin}",
+                            {"path": str(root / name)},
+                        ))
+                        continue
+                    # Inspect the already-opened object. The pathname is now
+                    # display metadata only and is never reopened for this candidate.
+                    emit(root / name, origin, candidate_fd=candidate_fd)
+                except OSError as exc:
+                    evidence.append(Evidence(
+                        "prefix_candidate", EvidenceStatus.BLOCKED,
+                        "Container entry could not be opened relative to its verified root",
+                        f"bottle_manager.discovery:{origin}",
+                        {"path": str(root / name), "error": str(exc)},
+                    ))
+                finally:
+                    if candidate_fd is not None:
+                        os.close(candidate_fd)
             if overflow:
                 evidence.append(Evidence(
                     "prefix_discovery", EvidenceStatus.PARTIALLY_PROVEN,
