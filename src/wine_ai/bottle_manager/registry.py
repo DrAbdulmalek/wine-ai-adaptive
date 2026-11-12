@@ -24,6 +24,9 @@ Security contract (bottle-manager integration, Phase B):
 - directory entries are addressed exclusively through directory file
   descriptors with ``follow_symlinks=False``; names never traverse the
   filesystem by themselves;
+- managed XDG path components are checked for current-user ownership and
+  group/other non-writability; the application and prefixes directories
+  must be exactly ``0700`` before registry access;
 - failures are fail-closed: the registry raises instead of guessing,
   and never deletes, repairs, or re-creates anything.
 
