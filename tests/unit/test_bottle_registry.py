@@ -119,6 +119,10 @@ class RegistrySecurityTests(unittest.TestCase):
         self.assertEqual(registry.read(), {})
         self.assertEqual(registry.orphans()["unregistered_on_disk"], {})
 
+    def test_read_does_not_create_registry_lock(self):
+        self.assertEqual(self.registry.read(), {})
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
     def test_register_requires_existing_root(self):
         absent = BottleRegistry(home=self.home / "nowhere")
         record = make_record("alpha", self.root, identity={"dev": 1, "ino": 2})
