@@ -7,7 +7,7 @@
 ## النطاق المعلن لـ 1.0.0
 
 - **v1.0.0 يغطي:** `diagnose`، بروفايلات CAT (Trados/memoQ — بدون ادعاء توافق)، CLI `wine-ai` (status / diagnose / prefixes / create-المحجوب)، نواة المعرفة المقواة، التصدير/الاستيراد بسياسة PROVEN الموثقة.
-- **v1.0.0 لا يغطي:** إنشاء Bottles (`create_bottle` — BLOCKED عمدًا)، محرك التوصيات (عقد مبدئي `NO_PROVEN_EVIDENCE` فقط)، أي ادعاء توافق Trados/memoQ فعلي (UNPROVEN).
+- **v1.0.0 لا يغطي:** إنشاء Bottles (`create_bottle` — BLOCKED عمدًا)، أمر التوصيات ومحركها (مؤجلان بالكامل — قرار المالك الملزم 2026-11-13: لا stub ولا محرك جزئي ولا واجهة)، أي ادعاء توافق Trados/memoQ فعلي (UNPROVEN).
 - ملاحظة النطاق مثبتة أيضًا في `CHANGELOG.md` تحت `[1.0.0]` باختبار (`test_changelog_scope_note_present_for_1_0_0`)، والإصدار يبقى `1.0.0` دون خفض (قرار 2026-11-13: لا نعيد كتابة التاريخ).
 
 ## PRs
@@ -24,7 +24,7 @@
 |---|---|---|
 | diagnose | يعمل (قراءة فقط) | قارئ سجل بواصف واحد؛ خضراء على الطبقية أيضًا بعد رقعة N-1 |
 | status / prefixes | يعمل (قراءة فقط) | اكتشاف البادئات يعمل على overlayfs/umask-002 بعد إصلاح N-1/N-2 |
-| recommend | عقد مبدئي فقط | `python -m wine_ai.recommendation` يعيد `NO_PROVEN_EVIDENCE` (الخطة §2.3)؛ المحرك مؤجل حتى مرساة ثقة موثقة — انظر `docs/design/recommendation-trust-anchor.md` (سؤال المالك معلق) |
+| recommend | غير موجود — مؤجل بالكامل | لا أمر ولا stub ولا واجهة في هذه الجولة (قرار المالك الملزم 2026-11-13: تأجيل الأمر والمحرك معًا إلى مرحلة مستقلة؛ الـstub العقدي السابق حُذف). الشروط المستقبلية للتحقق الموثوق وثيقة تصميم فقط: `docs/design/recommendation-trust-anchor.md` (سؤال مرساة الثقة معلق) |
 | create bottle | BLOCKED عمدًا | reason=CREATION_DISABLED_PENDING_SECURITY_REVIEW + doc_url في `docs/SECURITY_REMEDIATION_STATUS.md#النقطة-1`؛ `wine-ai create` يطبع الرسالة التعاقدية |
 | Trados / memoQ | UNPROVEN | مصفوفة قابلة للتعبئة: `docs/cat/compatibility-matrix.json` + سياسة الأدلة `docs/CAT_COMPATIBILITY.md`؛ سكربت التحقق `scripts/check_cat_matrix.py` في CI |
 | نظافة الملفات المؤقتة | منفذة (تحسين فقط) | `O_TMPFILE` + ربط `linkat` فقط؛ غياب العلم أو رفض نظام الملفات (مثبت overlayfs ENOTSUP) أو رفض الربط ⟶ `NotSupportedError` والكتابة ترفض — **لا يوجد مسار مؤقت مسمّى إطلاقًا** (عقد §1.2 المصحح 2026-11-13) — ليس إغلاق same-UID ولا CAS |

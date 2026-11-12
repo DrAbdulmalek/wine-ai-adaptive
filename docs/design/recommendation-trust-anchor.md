@@ -18,6 +18,12 @@ document states what "trusted verification" must mean as a TESTABLE
 contract, enumerates the negative cases the future verifier must fail
 closed on, and leaves exactly one decision to the owner.
 
+**Binding owner decision (2026-11-13):** the deferral is TOTAL — no
+command, no contract stub, no partial engine, no interface. The
+interim `wine_ai.recommendation` stub added earlier in this round was
+removed in the same round; nothing executable remains. This document
+is DESIGN ONLY and must not be read as an existing capability.
+
 ## 1. Definition of "trusted verification" (testable contract)
 
 A recommendation engine may rely on a `PROVEN` record **only** when all
@@ -70,9 +76,9 @@ relaxed silently.
 - May NOT elevate `UNPROVEN`/`PARTIALLY_PROVEN` rows into
   recommendations, even if a signature verifies, until the contract
   above is fully implemented.
-- Must surface `NO_PROVEN_EVIDENCE` (the stub contract,
-  `wine_ai/recommendation/status.py`) when no row qualifies — never
-  guess.
+- Must surface `NO_PROVEN_EVIDENCE` as an explicit empty-result
+  status when no row qualifies — never guess. (No stub or interface
+  exists today: the engine is fully deferred until §4 is answered.)
 
 ## 3. Future verifier tests (specification, not implementation)
 
