@@ -2,9 +2,11 @@
 
 ``run_read_only`` is NOT a generic sandbox. It enforces a strict
 allow-list: only known read-only diagnostic programs with known
-read-only arguments may run, always with ``shell=False``, a timeout and
-capped output capture. Any other program or argument fails closed with
-an error result instead of executing.
+read-only arguments may run, always with ``shell=False`` and a timeout.
+Returned output is truncated before it leaves this module; note that
+``subprocess.run(capture_output=True)`` still buffers the child output in
+memory, so this is not a hard memory-usage limit. Any other program or
+argument fails closed with an error result instead of executing.
 """
 
 import os
