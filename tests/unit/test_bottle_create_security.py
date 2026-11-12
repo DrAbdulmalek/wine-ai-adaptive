@@ -17,8 +17,7 @@ class CreateBottleDisabledTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def call_create(self, name):
-        with mock.patch("wine_ai.bottle_manager.create.Path.home", return_value=self.home):
-            return create_bottle(name)
+        return create_bottle(name)
 
     def test_valid_name_is_blocked_without_any_filesystem_write(self):
         info, evidence = self.call_create("safe-bottle")
