@@ -60,6 +60,48 @@ Minimum checks:
 
 Until these checks are recorded, mark target-Manjaro runtime validation NOT RUN. Do not infer success from the developer's distro or from an Ubuntu CI runner.
 
+## 6. Portability of the identity gates (review round 2026-11-13)
+
+A follow-up read-only review of this branch (2026-11-13) found two
+environment-dependent defects that GitHub CI (ext4, umask 022) cannot
+see; both are fixed by the portability commit on this branch and both
+keep the fail-closed direction.
+
+**N-1 — discovery denied service on layered filesystems (fixed).**
+The enumeration step compared readdir's `d_ino` with statx `st_ino` and
+blocked every candidate on mismatch. On overlayfs the two values differ
+structurally for every entry (proven 8/8 in a sandboxed repro), so all
+candidates were denied regardless of attacker activity — 17
+deterministic test failures in that environment. Identity binding now
+relies solely on the no-follow stat snapshot taken during enumeration
+compared with `fstat` of the descriptor opened `dir_fd`-relative to the
+scanned root (same stat family); the deterministic
+swap-after-enumeration test still guards the race, and a new regression
+test simulates overlayfs-style divergence and asserts discovery
+succeeds.
+
+**N-2 — registry refused standard user-private-group desktops
+(fixed, policy documented).**
+The managed-path gate rejected any group-writable component, including
+user-owned `~/.local` and `~/.local/share`. On Debian/Ubuntu
+user-private-group desktops (umask 002) those are 0775 owned by the
+user's own primary group, so the registry refused to open entirely for
+a large class of real users — 21 test errors in that environment. The
+gate now: rejects world-writable components always; accepts a
+group-writable XDG parent only when the owning group is the user's
+primary group (the group is the user alone); keeps application-owned
+components at exactly 0700. A group-writable component owned by any
+other group is rejected. Residual, honestly stated: on a system where
+an attacker is a member of the user's primary group, that group
+writability is a real risk; such setups are not the standard
+user-private-group pattern and remain blocked. Test fixtures now pin
+every managed component so the suite is hermetic under umask 002, 022,
+and 077 (proven: 385 tests OK under all three in the sandboxed repro).
+
+**Disposition:** both fixes preserve the fail-closed direction; neither
+weakens the same-UID race boundary described in section 1, which remains
+OPEN.
+
 ## Merge/release policy
 
 - Keep Create Bottle blocked.
