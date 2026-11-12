@@ -307,6 +307,7 @@ class RegistrySecurityTests(unittest.TestCase):
 
     def test_atomic_write_rejects_temporary_entry_swap_after_fsync(self):
         self.add_bottle_dir("alpha")
+        self.add_bottle_dir("beta")
         self.registry.register(make_record("alpha", self.root))
         real_fsync = os.fsync
         swapped = {"done": False}
@@ -329,9 +330,11 @@ class RegistrySecurityTests(unittest.TestCase):
         with mock.patch("wine_ai.bottle_manager.registry.os.fsync",
                         side_effect=swap_temp_after_sync):
             with self.assertRaises(BottleRegistryError):
-                self.registry.register(make_record("alpha", self.root, operation_id="op-2"))
+                self.registry.register(make_record("beta", self.root, operation_id="op-2"))
         self.assertTrue(swapped["done"])
         self.assertEqual(self.registry.get("alpha")["operation_id"], "op-1")
+        with self.assertRaises(BottleRegistryError):
+            self.registry.get("beta")
         self.assertFalse(any(
             name.endswith(".tmp") for name in os.listdir(self.root)
         ))
