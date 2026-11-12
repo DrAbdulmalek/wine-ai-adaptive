@@ -60,9 +60,11 @@ class RunReadOnlyAllowListTests(unittest.TestCase):
                 return SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=1000)
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
 
-        with mock.patch("wine_ai.command.shutil.which", return_value="/user/bin/wine"), \\
-             mock.patch("wine_ai.command.Path.stat", new=fake_stat), \\
-             mock.patch("wine_ai.command.os.access", return_value=True):
+        with (
+            mock.patch("wine_ai.command.shutil.which", return_value="/user/bin/wine"),
+            mock.patch("wine_ai.command.Path.stat", new=fake_stat),
+            mock.patch("wine_ai.command.os.access", return_value=True),
+        ):
             result = run_read_only(["wine", "--version"])
         self.assertEqual(result.error, "command not in read-only allow-list")
 
