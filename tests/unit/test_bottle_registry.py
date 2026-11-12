@@ -123,6 +123,31 @@ class RegistrySecurityTests(unittest.TestCase):
         self.assertEqual(self.registry.read(), {})
         self.assertFalse((self.root / LOCK_NAME).exists())
 
+    def test_open_root_rejects_group_or_world_writable_xdg_parent(self):
+        share = self.home / ".local" / "share"
+        share.chmod(0o777)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.read()
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
+    def test_open_root_requires_private_application_and_prefix_directories(self):
+        app = self.home / ".local" / "share" / "wine-ai-adaptive"
+        app.chmod(0o755)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.read()
+        app.chmod(0o700)
+        self.root.chmod(0o755)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.read()
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
+    def test_open_root_rejects_foreign_owned_managed_component(self):
+        real_geteuid = os.geteuid
+        with mock.patch("wine_ai.bottle_manager.registry.os.geteuid", return_value=real_geteuid() + 1):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.read()
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
     def test_register_requires_existing_root(self):
         absent = BottleRegistry(home=self.home / "nowhere")
         record = make_record("alpha", self.root, identity={"dev": 1, "ino": 2})
