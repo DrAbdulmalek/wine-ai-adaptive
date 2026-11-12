@@ -14,7 +14,9 @@
 | Trados Studio / memoQ compatibility | **UNPROVEN** | Per-version tests using legitimately licensed installers, isolated disposable prefixes, recorded Wine/build/OS/GPU details, and reproducible pass/fail evidence. Recipe presence or successful package CI is not application compatibility evidence. |
 | Actual Manjaro install/runtime validation | **NOT RUN — RELEASE BLOCKER for a Manjaro compatibility claim** | Run the documented smoke and integration matrix on a clean supported Manjaro host/VM. Capture sanitized command output and package versions; do not upload license material, translation files, raw user logs, or prefix contents. |
 
-## 1. Registry same-UID race
+<a id="النقطة-1"></a>
+
+## 1. Registry same-UID race (النقطة 1)
 
 The current registry uses directory descriptors, no-follow opens, advisory locking, unique temporary files, fsync, and identity revalidation. These controls protect against many path substitution and crash-consistency failures, but they do not create a compare-and-swap operation on a directory entry. A hostile process running under the same UID can race the final validation and rename.
 
@@ -41,6 +43,53 @@ Decision matrix, agreed during the patch review round. Recorded before any furth
 
 **Impact on create_bottle():** stays BLOCKED. Safe atomic registry writes do not, by themselves, prove the directory-creation and prefix-registration path safe; re-enabling requires the independent review of the create protocol described above, not a registry mechanism swap.
 
+### 1.2 Scope of the partial closure (contract, 2026-11-13)
+
+This subsection is the binding contract for what the current code closes
+and what it deliberately does not. It is written before the O_TMPFILE
+commit lands on this branch.
+
+**What is closed (by the code on this branch + its additions):**
+
+- Target identity is verified before publication: regular file, owner
+  is the current user, mode exactly 0600, hard-link count 1, opened
+  no-follow relative to the managed-root descriptor.
+- Identity is revalidated with ``fstat`` after every open, so a symlink
+  or entry swap after open is refused.
+- The temporary directory entry is matched against the held descriptor
+  immediately before replace; a swap of the temp name is rejected.
+- Partial writes are handled by ``_write_all`` — a short write can no
+  longer truncate the payload silently.
+- Temporary-file hygiene (new, 2026-11-13): the payload is written to an
+  UNNAMED ``O_TMPFILE`` inode where the platform/filesystem supports it;
+  the name exists only between the linkat attachment and the replace.
+  A missing ``O_TMPFILE`` flag raises ``NotSupportedError`` (fail-closed,
+  no named fallback). Where the filesystem refuses ``O_TMPFILE`` itself
+  (proven: overlayfs → ENOTSUP), the previously reviewed hardened
+  named-temporary protocol is used unchanged. This is hygiene ONLY.
+- Cooperating writers serialize through the advisory lock; store batches
+  are validated atomically before any transaction opens.
+
+**What stays open (not closable by portable in-process POSIX code):**
+
+- A hostile process under the same UID can still mutate directory
+  entries in the final check-to-rename window. This is a DAC boundary;
+  no in-process protocol closes it.
+- There is no portable compare-and-swap on a directory entry.
+  ``renameat2(RENAME_EXCHANGE)`` followed by verification was evaluated
+  and REJECTED (§1.1): verify-after-exchange is not an atomic
+  precondition, and the rollback itself is race-exposed.
+- ``O_TMPFILE`` is a hygiene improvement only — it is NOT a same-UID
+  closure and makes no CAS claim.
+- Full closure requires an isolated broker with an independent system
+  identity and a narrow authenticated IPC contract (§1.1 L3, v2 scope,
+  outside v1.x).
+
+**Impact on ``create_bottle()``:** remains BLOCKED for a reason that is
+independent of the registry write protocol: ``mkdirat()`` does not
+return a descriptor for the created inode, and prefix-path creation
+races need their own contract review (see §3).
+
 ## 2. Evidence provenance boundary
 
 The SQLite vocabulary constraint only restricts status strings; it cannot prove that a claim is authentic. The bridge already rejects PROVEN, but the low-level store previously accepted it. The public KnowledgeStore write boundary now also rejects new PROVEN values. Existing stored rows are not rewritten, and historical reads/exports are not reclassified by this change.
@@ -49,14 +98,21 @@ This is a containment control, **not a provenance verifier**. No caller-supplied
 
 **Batch atomicity (verified 2026-11-13, test-documented):** `add_records_atomic` validates the complete batch via `_prepare_record` before any write transaction opens, so a PROVEN record anywhere in a batch rejects the whole batch with zero rows inserted. `test_atomic_rejection_leaves_no_partial_insert` pins this property.
 
-**Historical round-trip policy (decision 2026-11-13):**
+**Historical round-trip policy (decision 2026-11-13, unified plan §2.2):**
 
 | Scenario | Behavior |
 |---|---|
 | Export of a historical PROVEN row | Exported exactly as stored; no downgrade on export, no data loss. |
-| Import of a PROVEN record via `import_package` (strict, default) | Rejected with `PortabilityError`, all-or-nothing. |
-| Import of a PROVEN record via `import_package_lenient` | Downgraded to UNPROVEN; the original claim is preserved in the returned report (`index`, `inserted_id`, `original_evidence_status`) and the caller must persist that report as the import log so no provenance semantics are silently lost. |
+| Import of a PROVEN record (default import path) | Downgraded to UNPROVEN; the original claim is preserved in the returned import report (`import_original_claim="PROVEN"`, `import_source="<source>:<index>"`, `import_warning="downgraded_from_PROVEN"`, plus `index`, `inserted_id`, `original_evidence_status`). The caller must persist that report as the import log so no provenance semantics are silently lost. |
+| Import of a PROVEN record with ``strict=True`` | Rejected with ``PortabilityError``, all-or-nothing; nothing is inserted. |
 | Recommendation relying on any PROVEN row | Remains disabled until a real verifier with a documented trust anchor exists. |
+
+Placement note (honest scoping): the original claim is preserved in the
+import report, not embedded as columns in the stored row. The canonical
+v4 store schema is frozen; embedding `import_original_claim`/
+`import_source`/`import_warning` as row columns would require a v5
+schema migration, which is deliberately out of scope for this round and
+would touch export, queries, and every migration path.
 
 ## 3. Create Bottle
 
