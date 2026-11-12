@@ -36,7 +36,7 @@ from wine_ai.diagnostics.cat_tools import (
     signature_hints,
 )
 from wine_ai.diagnostics.codes import extract_error_codes
-from wine_ai.diagnostics.log_parser import MAX_LOG_SIZE, inspect_log
+from wine_ai.diagnostics.log_parser import inspect_log_with_content
 from wine_ai.environment.inventory import collect_environment
 from wine_ai.evidence import Evidence, EvidenceStatus
 from wine_ai.gpu_compatibility.probe import probe_vulkan
@@ -110,14 +110,13 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
     manually; this tool never executes them (docs/AGENT_POLICY.md,
     no auto-repair).
     """
-    summary, evidence = inspect_log(log_path)
+    summary, evidence, text = inspect_log_with_content(log_path)
 
     findings = []
     profile_hints = []
     profile_analyzed = False
-    if "read_error" not in summary:
+    if "read_error" not in summary and text is not None:
         try:
-            text = _read_log_text(log_path)
             findings = extract_error_codes(text)
             if profile is not None:
                 findings = refine_findings(findings, profile)
@@ -126,7 +125,7 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
         except (OSError, ValueError) as exc:
             evidence = evidence + [
                 Evidence("diagnose_read", EvidenceStatus.BLOCKED,
-                         "Log could not be re-read safely",
+                         "Log analysis failed after the single safe read",
                          str(log_path), {"error": str(exc)})
             ]
 
