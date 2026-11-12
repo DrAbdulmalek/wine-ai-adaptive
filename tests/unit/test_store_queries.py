@@ -50,7 +50,7 @@ class QueryLayerTests(unittest.TestCase):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 "2026-11-12T00:00:00+00:00", "11.19", "Manjaro",
-                "missing_module", "PROVEN", "high", "unknown",
+                "unknown", "PROVEN", "high", "unknown",
                 "STATUS_DLL_NOT_FOUND",
             ))
 
