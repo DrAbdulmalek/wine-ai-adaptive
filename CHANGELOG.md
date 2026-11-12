@@ -7,6 +7,8 @@
 ## [Unreleased]
 
 ### Security
+- أُغلق مسار إدخال `PROVEN` عبر واجهة الكتابة العامة في `KnowledgeStore`: ترفض `add_record` و`add_records_atomic` الحالات الجديدة غير الموثقة؛ تبقى السجلات التاريخية قابلة للقراءة. هذا حاجز احتواء وليس بديلاً عن verifier للمصدر.
+- أضيف `docs/SECURITY_REMEDIATION_STATUS.md` لتحديد ما أُغلق وما بقي مانعًا: سباق same-UID ما زال مفتوحًا، Create Bottle يظل BLOCKED، توافق Trados/memoQ UNPROVEN، واختبار Manjaro الفعلي NOT RUN.
 - تعطيل `create_bottle()` و`BottleManager.create_bottle()` بالكامل؛
   كلاهما يعيد `BLOCKED` دون أي كتابة، إلى حين تصميم حد نظام تشغيل
   يعالج سباق same-UID بين `mkdirat` و`openat`.
