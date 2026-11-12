@@ -348,34 +348,35 @@ class BottleRegistry:
     # -- read-modify-write cycles ---------------------------------------------
 
     def read(self) -> dict[str, dict[str, Any]]:
-        """Return a validated copy of the registry (empty when uninitialized)."""
-        root_fd = lock_fd = reg_fd = None
+        """Read a stable registry inode without creating locks or other files.
+
+        Writers publish complete snapshots with os.replace(). Opening the
+        registry once pins either the old or new inode, so a reader can parse
+        a consistent snapshot without taking the advisory writer lock. This
+        keeps list/get/verify/orphans genuinely read-only.
+        """
+        root_fd = reg_fd = None
         try:
             try:
                 root_fd = self._open_root()
             except FileNotFoundError:
                 return {}
-            lock_fd = self._open_lock(root_fd)
-            fcntl.flock(lock_fd, fcntl.LOCK_SH)
+            reg_fd, _ = self._open_registry(root_fd)
+            if reg_fd is None:
+                return {}
+            raw = bytearray()
+            while True:
+                chunk = os.read(reg_fd, 65536)
+                if not chunk:
+                    break
+                raw.extend(chunk)
             try:
-                reg_fd, _ = self._open_registry(root_fd)
-                if reg_fd is None:
-                    return {}
-                raw = b""
-                while True:
-                    chunk = os.read(reg_fd, 65536)
-                    if not chunk:
-                        break
-                    raw += chunk
-                try:
-                    data = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, ValueError) as exc:
-                    raise BottleRegistryError("Registry file is corrupted") from exc
-                return dict(self._validate_document(data)["bottles"])
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                data = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise BottleRegistryError("Registry file is corrupted") from exc
+            return dict(self._validate_document(data)["bottles"])
         finally:
-            for fd in (reg_fd, lock_fd, root_fd):
+            for fd in (reg_fd, root_fd):
                 if fd is not None:
                     os.close(fd)
 
