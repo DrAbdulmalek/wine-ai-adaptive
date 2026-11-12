@@ -305,6 +305,37 @@ class RegistrySecurityTests(unittest.TestCase):
         # the real registry survived untouched
         self.assertEqual(os.lstat(self.root / REGISTRY_NAME).st_ino, reg_ino)
 
+    def test_atomic_write_rejects_temporary_entry_swap_after_fsync(self):
+        self.add_bottle_dir("alpha")
+        self.registry.register(make_record("alpha", self.root))
+        real_fsync = os.fsync
+        swapped = {"done": False}
+
+        def swap_temp_after_sync(fd):
+            if not swapped["done"]:
+                swapped["done"] = True
+                temp_names = [
+                    name for name in os.listdir(self.root)
+                    if name.startswith(REGISTRY_NAME + ".") and name.endswith(".tmp")
+                ]
+                self.assertEqual(len(temp_names), 1)
+                temp_name = temp_names[0]
+                os.unlink(self.root / temp_name)
+                replacement = self.root / temp_name
+                replacement.write_text("replacement", encoding="utf-8")
+                os.chmod(replacement, 0o600)
+            return real_fsync(fd)
+
+        with mock.patch("wine_ai.bottle_manager.registry.os.fsync",
+                        side_effect=swap_temp_after_sync):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.register(make_record("alpha", self.root, operation_id="op-2"))
+        self.assertTrue(swapped["done"])
+        self.assertEqual(self.registry.get("alpha")["operation_id"], "op-1")
+        self.assertFalse(any(
+            name.endswith(".tmp") for name in os.listdir(self.root)
+        ))
+
     def test_atomic_write_revalidates_identity_after_temp_fsync(self):
         self.add_bottle_dir("alpha")
         self.add_bottle_dir("beta")
