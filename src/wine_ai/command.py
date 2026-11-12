@@ -52,7 +52,10 @@ def _resolve_allowlisted_program(args: tuple[str, ...]) -> tuple[str, ...] | Non
         info = executable.stat()
         if not stat.S_ISREG(info.st_mode) or not os.access(executable, os.X_OK):
             return None
-        trusted_owners = {0, os.geteuid() if hasattr(os, "geteuid") else info.st_uid}
+        # Diagnostics must not execute a user-writable replacement. Only
+        # root-owned binaries in root-owned, non-writable path components
+        # are accepted; user-local Wine builds require a separate trust design.
+        trusted_owners = {0}
         if info.st_uid not in trusted_owners or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             return None
         for parent in executable.parents:
