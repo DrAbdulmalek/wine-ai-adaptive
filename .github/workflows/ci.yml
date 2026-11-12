@@ -26,7 +26,10 @@ jobs:
           fetch-depth: 0  # gitleaks scans the pushed history
 
       - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
+        # Pinned to the commit the v2 tag dereferences (verified via
+        # git ls-remote 2026-11-13); a floating tag would allow silent
+        # action swaps.
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
