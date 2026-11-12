@@ -297,8 +297,17 @@ class BottleRegistry:
                     raise OSError(errno.EIO, "registry write made no progress")
                 view = view[written:]
             os.fsync(fd)
-            os.close(fd)
-            fd = None
+
+            # Revalidate that the temporary name still refers to the inode
+            # held open by fd. The random name reduces discoverability but
+            # is not a substitute for checking the directory entry.
+            tmp_opened = os.fstat(fd)
+            tmp_entry = os.stat(tmp_name, dir_fd=root_fd, follow_symlinks=False)
+            _verify_file_identity(tmp_entry, what="Temporary registry entry")
+            if (tmp_entry.st_dev, tmp_entry.st_ino) != (
+                tmp_opened.st_dev, tmp_opened.st_ino
+            ):
+                raise BottleRegistryError("Temporary registry entry changed before replace")
 
             # Revalidate the target entry after the temporary file is fully
             # written and synced. This closes the earlier, avoidable gap; it
@@ -311,16 +320,16 @@ class BottleRegistry:
                 raise BottleRegistryError(
                     f"Could not revalidate registry immediately before replace ({exc.errno})"
                 ) from exc
-            if current is not None and (
-                stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode)
-            ):
-                raise BottleRegistryError("Registry target changed to an unsafe object")
+            if current is not None:
+                _verify_file_identity(current, what="Registry target")
             actual = None if current is None else (current.st_dev, current.st_ino)
             if actual != expected:
                 raise BottleRegistryError(
                     "Registry identity changed immediately before replace; write refused"
                 )
             os.replace(tmp_name, REGISTRY_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+            os.close(fd)
+            fd = None
             os.fsync(root_fd)
         except OSError as exc:
             if fd is not None:
