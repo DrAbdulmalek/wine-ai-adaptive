@@ -5,6 +5,11 @@ These tests implement the Phase-B test obligations of the 2026-11-11
 bottle-manager integration disposition: atomicity, identity
 revalidation, symlink/hard-link/foreign-owner rejection, fail-closed
 corruption handling, and concurrent read-modify-write serialization.
+
+Fixtures sit on ``OTMP_BASE`` (a filesystem honouring O_TMPFILE): after
+the 2026-11-13 fail-closed contract (§1.2) the registry has exactly one
+write path — the unnamed-inode flow — so write-flow tests require a
+capable filesystem and honestly skip where none exists.
 """
 
 from __future__ import annotations
@@ -12,12 +17,18 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    from _otmp_support import OTMP_BASE, O_TMPFILE_SUPPORTED
+except ImportError:  # invoked as tests.unit.… — make this dir importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _otmp_support import OTMP_BASE, O_TMPFILE_SUPPORTED
 from wine_ai.bottle_manager.create import MANAGED_ROOT_PARTS, NAME_PATTERN
 from wine_ai.bottle_manager.registry import (
     ALLOWED_RECORD_KEYS,
@@ -80,9 +91,14 @@ def make_record(name: str, root: Path, *, operation_id: str = "op-1", identity: 
     }
 
 
+@unittest.skipUnless(
+    O_TMPFILE_SUPPORTED,
+    "no O_TMPFILE-capable filesystem available (the registry's single "
+    "write path requires it — §1.2 fail-closed contract)",
+)
 class RegistrySecurityTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=OTMP_BASE)
         self.home = Path(self.tmp.name)
         self.root = prepare_root(self.home)
         self.registry = BottleRegistry(home=self.home)
@@ -517,9 +533,14 @@ class RegistrySecurityTests(unittest.TestCase):
         self.assertNotIn(LOCK_NAME, report["unexpected_entries"])
 
 
+@unittest.skipUnless(
+    O_TMPFILE_SUPPORTED,
+    "no O_TMPFILE-capable filesystem available (the registry's single "
+    "write path requires it — §1.2 fail-closed contract)",
+)
 class RegistryConcurrencyTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=OTMP_BASE)
         self.home = Path(self.tmp.name)
         self.root = prepare_root(self.home)
         self.registry = BottleRegistry(home=self.home)

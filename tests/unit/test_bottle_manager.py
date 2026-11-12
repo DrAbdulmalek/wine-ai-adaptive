@@ -1,12 +1,24 @@
-"""Read-only BottleManager facade tests; Create Bottle is intentionally disabled."""
+"""Read-only BottleManager facade tests; Create Bottle is intentionally disabled.
+
+Fixtures sit on ``OTMP_BASE``: the one test that registers a record
+exercises the registry's single fail-closed write path (§1.2), which
+requires an O_TMPFILE-capable filesystem and honestly skips where none
+exists.
+"""
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    from _otmp_support import OTMP_BASE, O_TMPFILE_SUPPORTED
+except ImportError:  # invoked as tests.unit.… — make this dir importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _otmp_support import OTMP_BASE, O_TMPFILE_SUPPORTED
 from wine_ai.bottle_manager.manager import BottleManager
 from wine_ai.bottle_manager.create import MANAGED_ROOT_PARTS
 from wine_ai.bottle_manager.registry import (
@@ -15,9 +27,14 @@ from wine_ai.bottle_manager.registry import (
 from wine_ai.evidence import EvidenceStatus
 
 
+@unittest.skipUnless(
+    O_TMPFILE_SUPPORTED,
+    "no O_TMPFILE-capable filesystem available (the registry's single "
+    "write path requires it — §1.2 fail-closed contract)",
+)
 class BottleManagerReadOnlyTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=OTMP_BASE)
         self.home = Path(self.tmp.name)
         patcher = mock.patch("wine_ai.bottle_manager.manager.Path.home", return_value=self.home)
         patcher.start()

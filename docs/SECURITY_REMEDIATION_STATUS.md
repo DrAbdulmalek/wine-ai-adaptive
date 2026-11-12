@@ -30,7 +30,7 @@ Decision matrix, agreed during the patch review round. Recorded before any furth
 
 | Level | What it closes | What stays open | Cost | Decision |
 |---|---|---|---|---|
-| L1: Linux `O_TMPFILE` (+ `linkat`/`renameat2` publication) | Unnamed temporary file cannot be preempted or swapped by name before publication | same-UID race on the final publication window; concurrent writers remain last-writer-wins (check-then-publish is not CAS) | low | **Adopted as a hardening layer only** — never described as closing same-UID |
+| L1: Linux `O_TMPFILE` (+ `linkat` materialization, `os.replace` publication) | Unnamed temporary file cannot be preempted or swapped by name before materialization | same-UID race on the final check-to-rename publication window; concurrent writers remain last-writer-wins (check-then-publish is not CAS) | low | **Adopted as a hardening layer only** — never described as closing same-UID |
 | L2: Registry directory owned by a different system user (0700) | same-UID writes at the directory level | requires pre-provisioning (user creation, permissions), breaks self-contained install | medium | **Rejected** (installation complexity, not portable) |
 | L3: Isolated broker + authenticated IPC | same-UID + concurrency + local tampering | logical TOCTOU inside the broker; needs its own review | high (systemd/root setup) | **Deferred to v2** with independent security review |
 
@@ -54,19 +54,26 @@ commit lands on this branch.
 - Target identity is verified before publication: regular file, owner
   is the current user, mode exactly 0600, hard-link count 1, opened
   no-follow relative to the managed-root descriptor.
-- Identity is revalidated with ``fstat`` after every open, so a symlink
-  or entry swap after open is refused.
+- Opens use ``O_NOFOLLOW`` and every opened file is validated with
+  ``fstat`` (type, owner, mode, hard-link count); where the protocol
+  re-examines a path entry against the held descriptor (temporary
+  entry before replace, target before replace), a mismatch is refused.
+  This reduces the risk of opening a symlink or a mismatched file, but
+  it cannot prove that the path still refers to the same inode after
+  the check — the check-to-use interval remains open (§1.1).
 - The temporary directory entry is matched against the held descriptor
-  immediately before replace; a swap of the temp name is rejected.
+  immediately before replace; a swap of the temp name is rejected,
+  with the same check-to-use caveat as above.
 - Partial writes are handled by ``_write_all`` — a short write can no
   longer truncate the payload silently.
-- Temporary-file hygiene (new, 2026-11-13): the payload is written to an
-  UNNAMED ``O_TMPFILE`` inode where the platform/filesystem supports it;
-  the name exists only between the linkat attachment and the replace.
-  A missing ``O_TMPFILE`` flag raises ``NotSupportedError`` (fail-closed,
-  no named fallback). Where the filesystem refuses ``O_TMPFILE`` itself
-  (proven: overlayfs → ENOTSUP), the previously reviewed hardened
-  named-temporary protocol is used unchanged. This is hygiene ONLY.
+- Temporary-file hygiene (new, 2026-11-13; reviewer-corrected
+  fail-closed contract): the payload is written to an UNNAMED
+  ``O_TMPFILE`` inode and receives a name only via ``linkat``
+  materialization immediately before ``os.replace``. A missing
+  ``O_TMPFILE`` flag, a filesystem that refuses it (ENOTSUP/EINVAL/
+  ENOSYS family — proven: overlayfs → ENOTSUP), or a refused
+  materialization raises ``NotSupportedError`` and the write refuses:
+  there is NO named-temporary fallback anywhere. This is hygiene ONLY.
 - Cooperating writers serialize through the advisory lock; store batches
   are validated atomically before any transaction opens.
 

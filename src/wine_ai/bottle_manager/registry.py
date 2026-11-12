@@ -14,12 +14,13 @@ Security contract (bottle-manager integration, Phase B):
   2026-11-13: a nameless inode cannot be preempted or swapped by path
   during the write), linked to a unique temporary name only after it is
   durable, revalidated against the held descriptor, and finally
-  ``os.replace``d over the registry followed by a directory fsync. On
-  filesystems that refuse ``O_TMPFILE`` (e.g. overlayfs, proven ENOTSUP
-  in a sandboxed repro) the previously reviewed hardened named-temporary
-  protocol is used unchanged and the degradation is documented in
-  ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2. This is temporary-file
-  hygiene ONLY and makes no same-UID claim;
+  ``os.replace``d over the registry followed by a directory fsync.
+  Fail-closed contract (§1.2, reviewer-corrected 2026-11-13): a missing
+  ``O_TMPFILE`` flag, a filesystem that refuses it (ENOTSUP/EINVAL/ENOSYS
+  family, e.g. overlayfs — proven in a sandboxed repro), or a failed
+  ``linkat`` materialization raises ``NotSupportedError`` and the write
+  refuses. There is NO named-temporary fallback anywhere. This is
+  temporary-file hygiene ONLY and makes no same-UID claim;
 - cooperating processes serialize registry read-modify-write cycles
   through an advisory ``fcntl.flock`` on a dedicated lock file; the
   fixed-name temporary file race of the rejected 2026-11-11 draft is
@@ -98,14 +99,30 @@ _DIR_FLAGS_EXTRA = getattr(os, "O_CLOEXEC", 0)
 #: ``O_TMPFILE`` availability (Linux 3.11+). ``None`` on other platforms.
 _O_TMPFILE = getattr(os, "O_TMPFILE", None)
 
-#: errnos meaning "the flag exists but this filesystem cannot honour it"
-#: (proven: overlayfs refuses O_TMPFILE with ENOTSUP). Other OSErrors
-#: propagate — fail-closed, never a silent downgrade of a real failure.
+#: errnos meaning "the flag exists but this platform/filesystem cannot
+#: honour it" (proven: overlayfs refuses O_TMPFILE with ENOTSUP). These
+#: map to NotSupportedError — the write refuses, fail-closed, with NO
+#: named-temporary fallback. Other OSErrors propagate unchanged: a real
+#: failure is never silently downgraded.
 _O_TMPFILE_UNSUPPORTED_ERRNOS = frozenset(
     {code for code in (
         getattr(errno, "ENOTSUP", None),
         getattr(errno, "EOPNOTSUPP", None),
         getattr(errno, "EINVAL", None),
+        getattr(errno, "ENOSYS", None),
+    ) if code is not None}
+)
+
+#: errnos meaning "linkat materialization is not honoured here"
+#: (reviewer contract §1.2; EXDEV included defensively). Same rule:
+#: refuse, never fall back.
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {code for code in (
+        getattr(errno, "EINVAL", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "ENOSYS", None),
+        getattr(errno, "EXDEV", None),
     ) if code is not None}
 )
 
@@ -117,9 +134,11 @@ class BottleRegistryError(Exception):
 class NotSupportedError(RuntimeError):
     """A required security primitive is unavailable on this platform.
 
-    Raised for the missing-``O_TMPFILE`` case: the write path then
-    refuses (fail-closed) instead of falling back to a named temporary
-    file. See ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2.
+    Raised when ``O_TMPFILE`` is missing from the platform OR the
+    filesystem refuses it (ENOTSUP/EINVAL/ENOSYS family) OR the
+    ``linkat`` materialization is refused: the write path then refuses
+    (fail-closed) instead of falling back to a named temporary file.
+    See ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2.
     """
 
 
@@ -149,11 +168,13 @@ def _write_temp_bytes(parent_fd: int, data: bytes) -> int:
 
     Linux contract with ``O_TMPFILE`` available: the inode has NO name
     until it is explicitly linked later, so it cannot be preempted or
-    swapped by path during the write. On platforms without ``O_TMPFILE``
-    this raises :class:`NotSupportedError` — fail-closed, with NO
-    named-temporary fallback. This is a hygiene improvement only: it is
-    NOT a same-UID closure and NOT a compare-and-swap (the publication
-    window after linking is unchanged; see
+    swapped by path during the write. Where ``O_TMPFILE`` is missing
+    from the platform OR the filesystem refuses it (ENOTSUP/EINVAL/ENOSYS
+    family — proven: overlayfs → ENOTSUP), this raises
+    :class:`NotSupportedError` — fail-closed, with NO named-temporary
+    fallback. This is a hygiene improvement only: it is NOT a same-UID
+    closure and NOT a compare-and-swap (the publication window after
+    linking is unchanged; see
     ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2).
     """
     if _O_TMPFILE is None:
@@ -161,7 +182,16 @@ def _write_temp_bytes(parent_fd: int, data: bytes) -> int:
             "O_TMPFILE unavailable; refusing named-temp fallback "
             "(see docs/SECURITY_REMEDIATION_STATUS.md)"
         )
-    fd = os.open(".", _O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=parent_fd)
+    try:
+        fd = os.open(".", _O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=parent_fd)
+    except OSError as exc:
+        if exc.errno in _O_TMPFILE_UNSUPPORTED_ERRNOS:
+            raise NotSupportedError(
+                "O_TMPFILE unsupported on this filesystem/kernel; "
+                "refusing named-temp fallback "
+                "(see docs/SECURITY_REMEDIATION_STATUS.md)"
+            ) from exc
+        raise
     try:
         # Mode is deterministic regardless of the process umask.
         os.fchmod(fd, 0o600)
@@ -181,14 +211,27 @@ def _link_unnamed_fd(fd: int, dir_fd: int, name: str) -> None:
     subsequent rename, shrinking the named-temporary window from "the
     whole write" to "just before publication". This is hygiene, not a
     same-UID boundary (no portable CAS exists).
+
+    Fail-closed: a refused materialization (EINVAL/EOPNOTSUPP/ENOTSUP/
+    ENOSYS/EXDEV family) raises :class:`NotSupportedError` — there is
+    NO named-temporary fallback (§1.2).
     """
-    os.link(
-        f"/proc/self/fd/{int(fd)}",
-        name,
-        src_dir_fd=None,
-        dst_dir_fd=dir_fd,
-        follow_symlinks=True,
-    )
+    try:
+        os.link(
+            f"/proc/self/fd/{int(fd)}",
+            name,
+            src_dir_fd=None,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=True,
+        )
+    except OSError as exc:
+        if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
+            raise NotSupportedError(
+                "O_TMPFILE materialization unsupported on this "
+                "filesystem/kernel; refusing named-temp fallback "
+                "(see docs/SECURITY_REMEDIATION_STATUS.md)"
+            ) from exc
+        raise
 
 
 def _verify_file_identity(info: os.stat_result, *, what: str) -> None:
@@ -415,28 +458,14 @@ class BottleRegistry:
         tmp_name = f"{REGISTRY_NAME}.{uuid.uuid4().hex}.tmp"
         fd = None
         try:
-            unnamed_fd: int | None
-            try:
-                unnamed_fd = _write_temp_bytes(root_fd, payload)
-            except NotSupportedError:
-                raise
-            except OSError as exc:
-                if exc.errno not in _O_TMPFILE_UNSUPPORTED_ERRNOS:
-                    raise
-                unnamed_fd = None
-            if unnamed_fd is not None:
-                fd = unnamed_fd
-                # The name exists only from here to the replace below.
-                _link_unnamed_fd(fd, root_fd, tmp_name)
-            else:
-                # Hardened named-temporary protocol (the reviewed
-                # pre-O_TMPFILE baseline), used only where the filesystem
-                # refuses O_TMPFILE. The same identity checks below apply.
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _file_flags()
-                fd = os.open(tmp_name, flags, 0o600, dir_fd=root_fd)
-                os.fchmod(fd, 0o600)
-                _write_all(fd, payload)
-                os.fsync(fd)
+            # Fail-closed: the payload is written to an UNNAMED inode only.
+            # A missing/refused O_TMPFILE or a refused linkat raises
+            # NotSupportedError; the write refuses and no named-temporary
+            # fallback exists anywhere (§1.2, reviewer contract).
+            fd = _write_temp_bytes(root_fd, payload)
+            # The name exists only from here (materialization) to the
+            # replace below.
+            _link_unnamed_fd(fd, root_fd, tmp_name)
 
             # Revalidate that the temporary name still refers to the inode
             # held open by fd. The random name reduces discoverability but
@@ -482,9 +511,10 @@ class BottleRegistry:
             except OSError:
                 pass
             raise BottleRegistryError(
-                "Registry write refused: O_TMPFILE unavailable on this platform "
-                "and a named-temporary fallback is forbidden (fail-closed); "
-                "see docs/SECURITY_REMEDIATION_STATUS.md"
+                "Registry write refused: O_TMPFILE or linkat materialization "
+                "unavailable/refused on this platform/filesystem and a "
+                "named-temporary fallback is forbidden (fail-closed); "
+                "see docs/SECURITY_REMEDIATION_STATUS.md §1.2"
             ) from exc
         except OSError as exc:
             if fd is not None:
