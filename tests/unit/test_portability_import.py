@@ -98,7 +98,7 @@ class ImportTests(unittest.TestCase):
     def test_round_trip_via_dict(self):
         source = _new_store(self.root, "source.sqlite3")
         _add(source, error_code="0xC0000005")
-        _add(source, error_category="memory", evidence_status="PROVEN",
+        _add(source, error_category="memory", evidence_status="PARTIALLY_PROVEN",
              confidence="high", error_code="STATUS_DLL_NOT_FOUND")
         package = export_records(source)
 
@@ -107,6 +107,15 @@ class ImportTests(unittest.TestCase):
 
         self.assertEqual(len(ids), 2)
         self.assertEqual(_signature(target.list_records()), _signature(source.list_records()))
+
+    def test_rejects_caller_supplied_proven_status(self):
+        package = _valid_package([_valid_record(evidence_status="PROVEN")])
+        target = _new_store(self.root, "target-proven.sqlite3")
+
+        with self.assertRaisesRegex(PortabilityError, "trusted evidence provenance"):
+            import_package(target, package)
+
+        self.assertEqual(target.list_records(), [])
 
     def test_round_trip_via_file(self):
         source = _new_store(self.root, "source.sqlite3")
