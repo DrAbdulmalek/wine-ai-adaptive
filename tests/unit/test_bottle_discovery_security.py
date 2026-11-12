@@ -532,7 +532,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             self.assertEqual(raised.exception.errno, errno.EBADF)
         self.assertTrue(any(
             item.status.value == "BLOCKED"
-            and "identity could not be verified" in item.summary
+            and "could not be opened relative" in item.summary
             for item in evidence
         ))
 
