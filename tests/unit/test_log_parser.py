@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from pathlib import Path
 
@@ -66,7 +67,7 @@ class LogParserTests(unittest.TestCase):
                     path.write_text("changed-content", encoding="utf-8")
                 return chunk
 
-            with unittest.mock.patch("wine_ai.diagnostics.log_parser.os.read",
+            with mock.patch("wine_ai.diagnostics.log_parser.os.read",
                                      side_effect=mutate_after_read):
                 data, evidence = inspect_log(str(path))
             self.assertIn("read_error", data)
