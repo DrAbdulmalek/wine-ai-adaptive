@@ -61,6 +61,10 @@
 
 ## [1.0.0] - 2026-11-12
 
+### Scope note
+`create_bottle()` is intentionally BLOCKED in 1.0.0 pending security review.
+This is a known limitation, not a regression. See docs/SECURITY_REMEDIATION_STATUS.md.
+
 > الإصدار الأول الرسمي: دمج المشروع المتكامل (PR #14) — جميع مسارات
 > الأمان (P1/P2) والوصفات ومدير الـBottles في نواة واحدة مع CI كامل
 > على Python 3.11–3.13. راجع ملاحظات الإصدار في GitHub Releases.
