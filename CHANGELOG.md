@@ -4,7 +4,10 @@
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 و[Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ### Security
+- رسالة الحجب صارت عقدًا صريحًا (الخطة الموحّدة §1.4): create_bottle تحمل reason=CREATION_DISABLED_PENDING_SECURITY_REVIEW وdoc_url=docs/SECURITY_REMEDIATION_STATUS.md#النقطة-1 (مرساة موجودة في الوثيقة)، وأمر wine-ai create يطبع الرسالة التعاقدية الكاملة إلى stderr برمز خروج 2 (وضع --json يعيد حمولة منظمة بنفس الحقول). لا إرجاع نجاح في أي مسار.
 - نظافة الملفات المؤقتة في سجل الـBottles (قرار الخطة الموحّدة 2026-11-13، تحسين مستقل لا يُغلق same-UID): يُكتب الحمض أولًا إلى inode بلا اسم عبر `O_TMPFILE` ثم يُربط باسم فريد بعد رسوخه فقط قبل النشر، فتتقلص نافذة الملف المؤقت المسمّى من «كامل مدة الكتابة» إلى «لحظة قبل الاستبدال». غياب `O_TMPFILE` على المنصة يرفع `NotSupportedError` (fail-closed بلا fallback مسمّى)، وحيث يرفض نظام الملفات العلم نفسه (مثبت: overlayfs → ENOTSUP) يُستخدم بروتوكول الملف المؤقت المسمّى المدقق سابقًا كما هو مع توثيق الانحلال. الكتابة الجزئية تُدار بـ`_write_all`. لا ادعاء CAS ولا ادعاء إغلاق same-UID.
 - سياسة الجولة (قرار الخطة الموحّدة §2.2، 2026-11-13): التصدير يحفظ صفوف PROVEN التاريخية كما هي؛ الاستيراد الافتراضي (`import_package`) يُنزل PROVEN إلى UNPROVEN مع تقرير استيراد يحفظ الادعاء الأصلي مربوطاً بالصف المخزن (index + inserted_id + `import_original_claim` + `import_source=<source>:<index>` + `import_warning=downgraded_from_PROVEN`) — يجب على المستدعي إبقاء هذا التقرير سجلاً دائماً؛ و`import_package(..., strict=True)` يرفض أي حزمة تحمل PROVEN كلياً (all-or-nothing) للمدققين. ملاحظة صادقة: الادعاء محفوظ في تقرير الاستيراد لا كأعمدة في الصف — تضمينه يتطلب ترحيل مخطط v5 خارج نطاق هذه الجولة.
 - ذرية رفض الدفعات موثقة باختبار: `add_records_atomic` يتحقق من الدفعة كاملة قبل فتح أي معاملة كتابة، فرفض PROVEN في أي موضع يترك صفر صفوف مُدرجة (`test_atomic_rejection_leaves_no_partial_insert`).

@@ -14,13 +14,25 @@ from typing import Any
 
 from wine_ai.evidence import Evidence, EvidenceStatus
 
-__all__ = ["create_bottle", "MANAGED_ROOT_PARTS", "NAME_PATTERN"]
+__all__ = [
+    "create_bottle",
+    "MANAGED_ROOT_PARTS",
+    "NAME_PATTERN",
+    "BLOCKED_REASON",
+    "BLOCKED_DOC_URL",
+]
 
 MANAGED_ROOT_PARTS = (".local", "share", "wine-ai-adaptive", "prefixes")
 AUDIT_DIR_PARTS = (".local", "share", "wine-ai-adaptive", "logs")
 AUDIT_FILENAME = "create-bottle.jsonl"
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 DIR_MODE, FILE_MODE = 0o700, 0o600
+
+#: Explicit machine-readable reason token (unified plan §1.4, 2026-11-13):
+#: the block is a product decision, not a transient fault.
+BLOCKED_REASON = "CREATION_DISABLED_PENDING_SECURITY_REVIEW"
+#: Where the blocking decision and its rationale are documented.
+BLOCKED_DOC_URL = "docs/SECURITY_REMEDIATION_STATUS.md#النقطة-1"
 
 
 class BottleCreateError(Exception):
@@ -51,7 +63,12 @@ def create_bottle(name: str) -> tuple[dict[str, Any] | None, list[Evidence]]:
                 "operation_id": operation_id,
                 "name": valid_name,
                 "feature_state": "DISABLED_PENDING_SECURITY_DESIGN",
-                "reason": "mkdirat does not return an opened descriptor for the created inode",
+                "reason": BLOCKED_REASON,
+                "technical_reason": (
+                    "mkdirat does not return an opened descriptor for the "
+                    "created inode"
+                ),
+                "doc_url": BLOCKED_DOC_URL,
             },
         )
     ]

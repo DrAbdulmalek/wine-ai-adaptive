@@ -222,6 +222,33 @@ def prefixes_command(as_json: bool) -> int:
     return 0
 
 
+# Intentional feature-gate message (unified plan §1.4, 2026-11-13).
+# Wording is contractual: the doc reference MUST appear in the output.
+BLOCKED_CREATE_MESSAGE = (
+    "ERROR: Bottle creation is intentionally BLOCKED.\n"
+    "Reason: creation path security review is incomplete (same-UID race is open;\n"
+    "        registry publication is not a CAS).\n"
+    "This is expected behavior. See: docs/SECURITY_REMEDIATION_STATUS.md"
+)
+
+
+def create_command(as_json: bool = False) -> int:
+    """Always refuse: bottle creation is blocked pending security review.
+
+    Performs zero filesystem work; exists so users get the honest
+    blocked message instead of an argparse 'invalid choice' error.
+    """
+    if as_json:
+        print(json.dumps({
+            "status": "BLOCKED",
+            "reason": "CREATION_DISABLED_PENDING_SECURITY_REVIEW",
+            "doc_url": "docs/SECURITY_REMEDIATION_STATUS.md#النقطة-1",
+        }, ensure_ascii=False))
+        return 2
+    print(BLOCKED_CREATE_MESSAGE, file=sys.stderr)
+    return 2
+
+
 def _add_json_flag(parser, *, suppressed=False):
     parser.add_argument(
         "--json",
@@ -276,6 +303,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_json_flag(prefixes_parser, suppressed=True)
 
+    create_parser = subparsers.add_parser(
+        "create",
+        help="Intentionally BLOCKED — bottle creation is disabled pending "
+             "a security review (see docs/SECURITY_REMEDIATION_STATUS.md).",
+    )
+    create_parser.add_argument(
+        "name",
+        nargs="?",
+        default="",
+        help="Requested bottle name (accepted for compatibility; nothing "
+             "is created).",
+    )
+    _add_json_flag(create_parser, suppressed=True)
+
     args = parser.parse_args(argv)
 
     command = args.command or "status"
@@ -292,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "prefixes":
         return prefixes_command(as_json=bool(args.json))
+
+    if command == "create":
+        return create_command(as_json=bool(args.json))
 
     parser.print_help()
     return 1

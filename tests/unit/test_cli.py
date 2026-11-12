@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -206,3 +206,39 @@ class PrefixesCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreateCommandBlockedTests(unittest.TestCase):
+    """Unified plan §1.4: `wine-ai create` always refuses, honestly."""
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_create_prints_blocked_message_to_stderr_and_exits_nonzero(self):
+        from wine_ai.cli import BLOCKED_CREATE_MESSAGE
+        code, out, err = self._run(["create", "myapp"])
+        self.assertEqual(code, 2)
+        self.assertEqual(err, BLOCKED_CREATE_MESSAGE + "\n")
+        self.assertIn(
+            "docs/SECURITY_REMEDIATION_STATUS.md", err,
+            "the blocked message must point at the remediation contract",
+        )
+        self.assertIn("not a CAS", err)
+        self.assertEqual(out, "")
+
+    def test_create_json_output_carries_reason_and_doc_url(self):
+        code, out, _ = self._run(["create", "myapp", "--json"])
+        self.assertEqual(code, 2)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "BLOCKED")
+        self.assertEqual(payload["reason"],
+                         "CREATION_DISABLED_PENDING_SECURITY_REVIEW")
+        self.assertIn("SECURITY_REMEDIATION_STATUS", payload["doc_url"])
+
+    def test_create_without_name_is_also_blocked(self):
+        code, _, err = self._run(["create"])
+        self.assertEqual(code, 2)
+        self.assertIn("intentionally BLOCKED", err)
