@@ -1,4 +1,12 @@
-"""Fail-closed creation of empty, uninitialized managed Wine bottle directories."""
+"""Create Bottle entry point.
+
+The write capability is deliberately disabled until a same-UID namespace
+race can be eliminated by a stronger OS boundary. POSIX mkdirat() does not
+return a descriptor for the newly created directory, so mkdirat()+openat()
+cannot prove that the opened object is the object created if another process
+with the same UID can rename entries between the calls. The old implementation
+is retained below only as historical implementation context and is not
+reachable through the public API.
 from __future__ import annotations
 import errno, fcntl, json, os, re, stat, time, uuid
 from pathlib import Path
@@ -171,53 +179,24 @@ def _blocked(reason: str,name: str|None,operation_id: str,audit_fd: int|None=Non
         {"operation_id":operation_id,"relative_path":f"prefixes/{name}" if name else None})]
 
 def create_bottle(name: str) -> tuple[dict|None,list[Evidence]]:
-    """Create one empty directory under the current user's managed root."""
-    opid=uuid.uuid4().hex; valid=name if _validate_name(name) else None
-    home_path=Path.home()
-    home_fd=audit_fd=root_fd=target_fd=None; identity=None
-    try:
-        home_fd=_open_dir_path(home_path)
-        audit_fd=_open_audit_log(home_fd)
-    except (OSError,BottleCreateError) as exc:
-        for fd in (root_fd,audit_fd,home_fd):
-            if fd is not None: os.close(fd)
-        return _blocked(f"Audit facility unavailable; operation refused ({type(exc).__name__})",valid,opid)
-    try:
-        if valid is None:
-            return _blocked("Invalid name: use 1-64 ASCII letters, digits, '-' or '_' and begin alphanumerically",None,opid,audit_fd)
-        root_fd=_walk_private_path(home_fd,MANAGED_ROOT_PARTS)
-        if _protected_root_identity(home_fd,root_fd):
-            return _blocked("Managed prefixes root aliases protected ~/.wine identity",valid,opid,audit_fd)
-        try: os.stat(valid,dir_fd=root_fd,follow_symlinks=False)
-        except FileNotFoundError: pass
-        except OSError as exc:
-            return _blocked(f"Target examination failed ({errno.errorcode.get(exc.errno,'OSERROR')})",valid,opid,audit_fd)
-        else: return _blocked("Target already exists; replacement is forbidden",valid,opid,audit_fd)
-        try:
-            os.mkdir(valid,mode=DIR_MODE,dir_fd=root_fd)
-            target_fd=os.open(valid,_directory_flags(),dir_fd=root_fd)
-            info=os.fstat(target_fd); identity=(info.st_dev,info.st_ino)
-            os.fchmod(target_fd,DIR_MODE)
-            info=_verify_created_directory(target_fd)
-            if (info.st_dev,info.st_ino)!=identity: raise BottleCreateError("Created identity changed")
-            _verify_target_entry(root_fd,valid,identity)
-        except (OSError,BottleCreateError) as exc:
-            if target_fd is not None and identity is not None:
-                _cleanup_created_directory(root_fd,valid,target_fd,identity)
-            return _blocked(f"Creation/postcondition failed ({type(exc).__name__})",valid,opid,audit_fd)
-        try:
-            _append_audit(audit_fd,operation_id=opid,name=valid,outcome="PROVEN",reason=None)
-        except OSError:
-            _cleanup_created_directory(root_fd,valid,target_fd,identity)
-            return _blocked("Success audit record failed; cleanup attempted",valid,opid,audit_fd)
-        return {"name":valid,"path":str(home_path.joinpath(*MANAGED_ROOT_PARTS,valid)),
-            "origin":"created","protected":False,"architecture":None,
-            "state":"EMPTY_UNINITIALIZED","created_at":time.time(),"operation_id":opid},[
-            Evidence("bottle_create",EvidenceStatus.PROVEN,f"Empty uninitialized directory '{valid}' created",
-                "bottle_manager.create",{"operation_id":opid,"relative_path":f"prefixes/{valid}",
-                "mode":"0700","state":"EMPTY_UNINITIALIZED"})]
-    except (OSError,BottleCreateError) as exc:
-        return _blocked(f"Safe creation precondition failed ({type(exc).__name__})",valid,opid,audit_fd)
-    finally:
-        for fd in (target_fd,root_fd,audit_fd,home_fd):
-            if fd is not None: os.close(fd)
+    """Return BLOCKED until safe mkdir/open identity binding is available.
+
+    No directories, audit files, locks, Wine processes, or registry entries
+    are created by this public entry point. This is an intentional fail-closed
+    feature gate, not a transient filesystem error.
+    """
+    operation_id = uuid.uuid4().hex
+    valid_name = name if _validate_name(name) else None
+    return None, [Evidence(
+        "bottle_create",
+        EvidenceStatus.BLOCKED,
+        "Create Bottle is disabled: the same-UID mkdir/open namespace race "
+        "cannot currently be closed safely",
+        "bottle_manager.create",
+        {
+            "operation_id": operation_id,
+            "name": valid_name,
+            "feature_state": "DISABLED_PENDING_SECURITY_DESIGN",
+            "reason": "mkdirat does not return an opened descriptor for the created inode",
+        },
+    )]
