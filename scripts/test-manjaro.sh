@@ -11,6 +11,7 @@
 # The final report is written to ./manjaro-smoke-report.txt and printed.
 
 set -euo pipefail
+umask 077  # nothing this script creates is world-readable (reviewer round 2026-11-13)
 
 WHEEL="${1:-}"
 if [[ -z "$WHEEL" || ! -f "$WHEEL" ]]; then
@@ -65,15 +66,17 @@ trap 'rm -rf "$VENV"' EXIT
 record "INFO" "wheel" "$(basename "$WHEEL")"
 record "INFO" "host" "$(grep -E '^(NAME|VERSION)=' /etc/os-release 2>/dev/null | tr '\n' ' ' || true)"
 record "INFO" "kernel" "$(uname -r)"
+record "INFO" "machine-id" "$(sh -c 'test -s /etc/machine-id && echo present || echo missing')"
 
 # Snapshot ~/.wine identity BEFORE any CLI run (section 5, check 5).
 SNAP_BEFORE="$(wine_identity)"
 record "INFO" "~/.wine snapshot (before)" "$SNAP_BEFORE"
 
 # Step 1: clean venv + wheel install. The package is stdlib-only by
-# policy, so no downloads are expected.
+# policy, so --no-index must succeed: any dependency resolution attempt
+# (network) is a real packaging defect, not a soft warning.
 run_step "create venv"        python -m venv "$VENV/venv"
-run_step "install wheel"      "$VENV/venv/bin/pip" install --no-input "$WHEEL"
+run_step "install wheel"      "$VENV/venv/bin/pip" install --no-input --no-index "$WHEEL"
 run_step "entry point exists" test -x "$VENV/venv/bin/wine-ai"
 
 # Step 2: read-only CLI surface.
