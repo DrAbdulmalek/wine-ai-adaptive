@@ -100,9 +100,9 @@ LAUNCHERS = frozenset({
 
 SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+ -]{0,63}$")
 
-# Prefix pseudonym: lowercase hexadecimal, 16..64 chars (a truncated
-# SHA-256 digest produced by the environment layer; the raw prefix
-# path is never accepted here).
+# Prefix pseudonym: lowercase hexadecimal, 16..64 chars (currently a
+# 128-bit truncated HMAC-SHA256 produced by the environment layer; the
+# raw prefix path is never accepted here).
 SAFE_HASH = re.compile(r"^[a-f0-9]{16,64}$")
 
 TABLE_NAME = "diagnostic_records"
@@ -526,6 +526,12 @@ class KnowledgeStore:
 
     No raw logs, prompts, arbitrary text, file paths,
     executable contents, or prefix contents are accepted.
+
+    Evidence statuses are caller-supplied classifications, not cryptographic
+    proof. This store validates the status vocabulary and schema but does not
+    verify evidence provenance or test artifacts. Direct low-level callers
+    remain trusted to assign PROVEN honestly; recipe/bridge APIs deliberately
+    refuse to issue PROVEN until a trusted verifier exists.
 
     See the module docstring for the exact filesystem and schema
     hardening properties, and for their documented limitations.
