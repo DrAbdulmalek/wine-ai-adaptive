@@ -5,7 +5,8 @@ read-only diagnostic commands, regardless of caller.
 """
 
 import unittest
-import sys
+import stat
+from types import SimpleNamespace
 from unittest import mock
 
 from wine_ai.command import CommandResult, run_read_only
@@ -36,10 +37,20 @@ class RunReadOnlyAllowListTests(unittest.TestCase):
         )
 
     def test_allowlisted_program_accepts_only_known_arguments(self):
-        with mock.patch("wine_ai.command.shutil.which", return_value=sys.executable):
+        def fake_stat(path):
+            if str(path) == "/trusted/bin/vulkaninfo":
+                return SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=0)
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch("wine_ai.command.shutil.which", return_value="/trusted/bin/vulkaninfo"), \\
+             mock.patch("wine_ai.command.Path.stat", new=fake_stat), \\
+             mock.patch("wine_ai.command.os.access", return_value=True), \\
+             mock.patch("wine_ai.command.subprocess.run", return_value=completed) as run:
             result = run_read_only(["vulkaninfo", "--summary"])
-        self.assertIsNotNone(result)
-        self.assertNotEqual(result.error, "command not in read-only allow-list")
+        self.assertIsNone(result.error)
+        self.assertEqual(result.argv, ("/trusted/bin/vulkaninfo", "--summary"))
+        run.assert_called_once()
 
     def test_custom_executable_path_is_rejected(self):
         result = run_read_only(["/opt/custom/bin/wine", "--version"])
