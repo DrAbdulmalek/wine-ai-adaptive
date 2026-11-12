@@ -52,6 +52,26 @@ class LogParserTests(unittest.TestCase):
             self.assertIn("read_error", data)
             self.assertEqual(evidence[0].status.value, "BLOCKED")
 
+    def test_rejects_in_place_change_during_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wine.log"
+            path.write_text("initial", encoding="utf-8")
+            real_read = os.read
+            changed = {"done": False}
+
+            def mutate_after_read(fd, count):
+                chunk = real_read(fd, count)
+                if chunk and not changed["done"]:
+                    changed["done"] = True
+                    path.write_text("changed-content", encoding="utf-8")
+                return chunk
+
+            with unittest.mock.patch("wine_ai.diagnostics.log_parser.os.read",
+                                     side_effect=mutate_after_read):
+                data, evidence = inspect_log(str(path))
+            self.assertIn("read_error", data)
+            self.assertEqual(evidence[0].status.value, "BLOCKED")
+
     def test_descriptor_reader_returns_same_content_used_for_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "wine.log"
