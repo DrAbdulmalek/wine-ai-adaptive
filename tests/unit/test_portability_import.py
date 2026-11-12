@@ -24,6 +24,7 @@ from wine_ai.portability import (
     import_package_lenient,
     read_package,
     validate_package,
+    write_package,
 )
 
 
@@ -105,9 +106,9 @@ class ImportTests(unittest.TestCase):
         package = export_records(source)
 
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, package)
+        report = import_package(target, package)
 
-        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(report["inserted_ids"]), 2)
         self.assertEqual(_signature(target.list_records()), _signature(source.list_records()))
 
     def test_rejects_caller_supplied_proven_status(self):
@@ -115,7 +116,7 @@ class ImportTests(unittest.TestCase):
         target = _new_store(self.root, "target-proven.sqlite3")
 
         with self.assertRaisesRegex(PortabilityError, "trusted evidence provenance"):
-            import_package(target, package)
+            import_package(target, package, strict=True)
 
         self.assertEqual(target.list_records(), [])
 
@@ -126,9 +127,9 @@ class ImportTests(unittest.TestCase):
         export_to_file(source, path)
 
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package_file(target, path)
+        report = import_package_file(target, path)
 
-        self.assertEqual(len(ids), 1)
+        self.assertEqual(len(report["inserted_ids"]), 1)
         self.assertEqual(target.list_records()[0]["error_code"], "0xC0000005")
 
     def test_round_trip_with_prefix_id(self):
@@ -193,8 +194,8 @@ class ImportTests(unittest.TestCase):
         ok["prefix_id"] = "abc"
         package = _valid_package([ok], includes_prefix_id=True)
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, package)
-        self.assertEqual(len(ids), 1)
+        report = import_package(target, package)
+        self.assertEqual(len(report["inserted_ids"]), 1)
         self.assertEqual(target.list_records()[0]["prefix_id"], "abc")
 
     def test_ignores_created_at_ym_field(self):
@@ -218,8 +219,8 @@ class ImportTests(unittest.TestCase):
 
     def test_empty_package_returns_empty_list(self):
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, _valid_package([]))
-        self.assertEqual(ids, [])
+        report = import_package(target, _valid_package([]))
+        self.assertEqual(report["inserted_ids"], [])
         self.assertEqual(target.list_records(), [])
 
     def test_too_many_records_rejected(self):
@@ -284,8 +285,8 @@ class ImportTests(unittest.TestCase):
         record = _valid_record()
         package = _valid_package([record], includes_prefix_id=True)
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, package)
-        self.assertEqual(len(ids), 1)
+        report = import_package(target, package)
+        self.assertEqual(len(report["inserted_ids"]), 1)
         self.assertIsNone(target.list_records()[0]["prefix_id"])
 
     def test_rejects_invalid_created_at_ym(self):
@@ -305,8 +306,8 @@ class ImportTests(unittest.TestCase):
         records[1]["created_at_ym"] = "unknown"
         package = _valid_package(records)
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, package)
-        self.assertEqual(len(ids), 2)
+        report = import_package(target, package)
+        self.assertEqual(len(report["inserted_ids"]), 2)
 
     # -- header strictness -----------------------------------------------------
 
@@ -385,8 +386,8 @@ class ImportTests(unittest.TestCase):
         records = [_valid_record() for _ in range(MAX_IMPORT_RECORDS)]
         package = _valid_package(records)
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, package)
-        self.assertEqual(len(ids), MAX_IMPORT_RECORDS)
+        report = import_package(target, package)
+        self.assertEqual(len(report["inserted_ids"]), MAX_IMPORT_RECORDS)
         self.assertEqual(
             len(target.list_records(limit=MAX_IMPORT_RECORDS)),
             MAX_IMPORT_RECORDS,
@@ -398,8 +399,8 @@ class ImportTests(unittest.TestCase):
         records = [_valid_record() for _ in range(250)]
         package = _valid_package(records)
         target = _new_store(self.root, "target.sqlite3")
-        ids = import_package(target, package)
-        self.assertEqual(len(ids), 250)
+        report = import_package(target, package)
+        self.assertEqual(len(report["inserted_ids"]), 250)
 
     def test_later_batch_failure_keeps_earlier_batches(self):
         # Documented residual risk: insertion is per-batch atomic, not
@@ -500,8 +501,86 @@ class ImportTests(unittest.TestCase):
             _valid_record(evidence_status="PROVEN"),
         ])
         with self.assertRaises(PortabilityError):
-            import_package(target, package)
+            import_package(target, package, strict=True)
         self.assertEqual(target.list_records(), [])
+
+    # -- unified plan §2.2 named contract tests (2026-11-13) -----------------
+
+    def test_export_proven_preserved(self):
+        # Plan §2.2 row 1: a historical PROVEN row is exported exactly as
+        # stored — the export path never rewrites claims.
+        source = _new_store(self.root, "source-exp.sqlite3")
+        row_id = _add(source)
+        connection = sqlite3.connect(source.db_path)
+        try:
+            connection.execute(
+                "UPDATE diagnostic_records SET evidence_status = 'PROVEN' WHERE id = ?",
+                (row_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertEqual(
+            [r["evidence_status"] for r in export_records(source)["records"]],
+            ["PROVEN"],
+        )
+
+    def test_import_proven_downgraded_preserves_claim(self):
+        # Plan §2.2 row 2: DEFAULT import downgrades PROVEN to UNPROVEN
+        # while preserving the original claim via the plan's explicit
+        # annotation fields (import_original_claim / import_source /
+        # import_warning) tied to the stored row (index + inserted_id).
+        target = _new_store(self.root, "target-default.sqlite3")
+        package = _valid_package([
+            _valid_record(evidence_status="UNPROVEN"),
+            _valid_record(evidence_status="PROVEN"),
+        ])
+
+        report = import_package(target, package)
+
+        self.assertEqual(len(report["downgraded"]), 1)
+        entry = report["downgraded"][0]
+        self.assertEqual(entry["index"], 1)
+        self.assertEqual(entry["inserted_id"], report["inserted_ids"][1])
+        self.assertEqual(entry["original_evidence_status"], "PROVEN")
+        self.assertEqual(entry["import_original_claim"], "PROVEN")
+        self.assertEqual(entry["import_source"], "package:1")
+        self.assertEqual(entry["import_warning"], "downgraded_from_PROVEN")
+        self.assertEqual(entry["final_evidence_status"], "UNPROVEN")
+
+        stored = target.list_records(limit=10)
+        self.assertEqual(
+            sorted(r["evidence_status"] for r in stored),
+            ["UNPROVEN", "UNPROVEN"],
+        )
+
+    def test_import_proven_strict_rejected(self):
+        # Plan §2.2 row 3: strict import rejects a PROVEN package
+        # all-or-nothing; no row reaches the store.
+        target = _new_store(self.root, "target-strict.sqlite3")
+        package = _valid_package([
+            _valid_record(evidence_status="UNPROVEN"),
+            _valid_record(evidence_status="PROVEN"),
+            _valid_record(evidence_status="UNPROVEN"),
+        ])
+        with self.assertRaises(PortabilityError):
+            import_package(target, package, strict=True)
+        self.assertEqual(target.list_records(), [])
+
+    def test_file_import_report_uses_path_as_source(self):
+        # import_package_file ties the preserved claim to the source path.
+        target = _new_store(self.root, "target-file.sqlite3")
+        path = self.root / "with-proven.json"
+        write_package(
+            _valid_package([_valid_record(evidence_status="PROVEN")]),
+            path,
+        )
+        report = import_package_file(target, path)
+        self.assertEqual(len(report["downgraded"]), 1)
+        self.assertTrue(
+            report["downgraded"][0]["import_source"].startswith(str(path)),
+            "import_source must reference the package file and index",
+        )
 
 
 if __name__ == "__main__":

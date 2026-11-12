@@ -442,6 +442,38 @@ def _normalize_record(
 def import_package(
     store: KnowledgeStore,
     package: Any,
+    *,
+    strict: bool = False,
+    source_id: str = "package",
+) -> list[int] | dict[str, Any]:
+    """Import ``package`` into ``store`` under the documented PROVEN policy.
+
+    Decision (unified plan §2.2, 2026-11-13; SECURITY_REMEDIATION_STATUS.md
+    §2 "Historical round-trip policy"):
+
+    - ``strict=False`` (default): a package carrying PROVEN is accepted,
+      with every PROVEN record downgraded to UNPROVEN and the ORIGINAL
+      claim preserved in the returned import report
+      (``import_original_claim`` / ``import_source`` / ``import_warning``
+      plus ``index`` / ``inserted_id``). The caller must persist that
+      report as the import log so no provenance semantics are silently
+      lost. Returns the report dict.
+    - ``strict=True``: all-or-nothing rejection of any PROVEN record with
+      ``PortabilityError``; nothing is inserted. Returns the list of
+      inserted ids (historical behavior, kept for auditors).
+
+    Both paths validate the complete package before any insert.
+    """
+    if not isinstance(strict, bool):
+        raise PortabilityError("strict must be bool")
+    if strict:
+        return _import_package_strict(store, package)
+    return import_package_lenient(store, package, source_id=source_id)
+
+
+def _import_package_strict(
+    store: KnowledgeStore,
+    package: Any,
 ) -> list[int]:
     """Validate ``package`` and insert its records into ``store``.
 
@@ -487,28 +519,34 @@ def import_package(
 def import_package_file(
     store: KnowledgeStore,
     path: str | Path,
-) -> list[int]:
-    """Convenience: read from disk then import."""
-    return import_package(store, read_package(path))
+    *,
+    strict: bool = False,
+) -> list[int] | dict[str, Any]:
+    """Convenience: read from disk then import (``source_id`` = the path)."""
+    return import_package(store, read_package(path), strict=strict, source_id=str(path))
 
 
 def import_package_lenient(
     store: KnowledgeStore,
     package: Any,
+    *,
+    source_id: str = "package",
 ) -> dict[str, Any]:
     """Import with the documented downgrade policy for PROVEN records.
 
-    Policy decision (2026-11-13, SECURITY_REMEDIATION_STATUS.md §2):
+    Policy decision (unified plan §2.2, 2026-11-13,
+    SECURITY_REMEDIATION_STATUS.md §2):
 
-    - ``import_package`` stays the strict entry point: it rejects any
-      package carrying PROVEN with ``PortabilityError``, all-or-nothing.
-    - This lenient entry point never inserts a PROVEN row (the store
-      write barrier forbids that). Historical PROVEN claims inside an
-      incoming package are downgraded to UNPROVEN, and the ORIGINAL
-      claim is preserved in the returned report, tied to the stored row
-      via its index and inserted id. The caller must persist this
-      report as the import log so no provenance semantics are silently
-      lost.
+    - This is the DEFAULT import policy: a package carrying PROVEN is
+      accepted, but no PROVEN row is ever inserted (the store write
+      barrier forbids that). Historical PROVEN claims inside an incoming
+      package are downgraded to UNPROVEN and the ORIGINAL claim is
+      preserved in the returned report, tied to the stored row via its
+      index and inserted id, plus the plan's explicit annotation fields.
+      The caller must persist this report as the import log so no
+      provenance semantics are silently lost.
+    - ``import_package(..., strict=True)`` is the strict variant that
+      rejects any PROVEN record all-or-nothing.
     - Records without PROVEN are unaffected.
 
     The returned report::
@@ -522,6 +560,9 @@ def import_package_lenient(
                     "inserted_id": <int, row id in the target store>,
                     "original_evidence_status": "PROVEN",
                     "final_evidence_status": "UNPROVEN",
+                    "import_original_claim": "PROVEN",
+                    "import_source": "<source_id>:<index>",
+                    "import_warning": "downgraded_from_PROVEN",
                     "reason": "proven_write_barrier_import_policy",
                 },
                 ...
@@ -550,6 +591,9 @@ def import_package_lenient(
                 "index": index,
                 "original_evidence_status": "PROVEN",
                 "final_evidence_status": "UNPROVEN",
+                "import_original_claim": "PROVEN",
+                "import_source": f"{source_id}:{index}",
+                "import_warning": "downgraded_from_PROVEN",
                 "reason": "proven_write_barrier_import_policy",
             })
         try:
