@@ -28,6 +28,17 @@ The SQLite vocabulary constraint only restricts status strings; it cannot prove 
 
 This is a containment control, **not a provenance verifier**. No caller-supplied status, digest, or repository-local metadata is sufficient to authenticate evidence. Recommendation authorization remains disabled until the trust-anchor decision, evidence envelope, local raw-evidence retention, deterministic verifier, freshness/revocation handling, and adversarial/mutation tests described in docs/decisions/2026-11-12-evidence-provenance-contract-proposal.md are approved and implemented.
 
+**Batch atomicity (verified 2026-11-13, test-documented):** `add_records_atomic` validates the complete batch via `_prepare_record` before any write transaction opens, so a PROVEN record anywhere in a batch rejects the whole batch with zero rows inserted. `test_atomic_rejection_leaves_no_partial_insert` pins this property.
+
+**Historical round-trip policy (decision 2026-11-13):**
+
+| Scenario | Behavior |
+|---|---|
+| Export of a historical PROVEN row | Exported exactly as stored; no downgrade on export, no data loss. |
+| Import of a PROVEN record via `import_package` (strict, default) | Rejected with `PortabilityError`, all-or-nothing. |
+| Import of a PROVEN record via `import_package_lenient` | Downgraded to UNPROVEN; the original claim is preserved in the returned report (`index`, `inserted_id`, `original_evidence_status`) and the caller must persist that report as the import log so no provenance semantics are silently lost. |
+| Recommendation relying on any PROVEN row | Remains disabled until a real verifier with a documented trust anchor exists. |
+
 ## 3. Create Bottle
 
 create_bottle() must continue to return BLOCKED and perform zero filesystem writes. Tests must assert no directory, lock, registry file, audit log, or Wine process is created. Do not re-enable the historical mkdir/open implementation. The old design is retained only as historical review material.

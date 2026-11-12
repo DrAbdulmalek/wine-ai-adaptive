@@ -1,6 +1,7 @@
 import inspect
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,7 @@ from wine_ai.portability import (
     export_to_file,
     import_package,
     import_package_file,
+    import_package_lenient,
     read_package,
     validate_package,
 )
@@ -423,6 +425,83 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(calls["count"], 2)
         stored = target.list_records(limit=1000)
         self.assertEqual(len(stored), 100)
+
+    def test_export_preserves_historical_proven_rows(self):
+        # Round-trip decision (2026-11-13): historical PROVEN rows are
+        # exported exactly as stored — no downgrade on export, no data
+        # loss. The fixture simulates a pre-barrier row by writing the
+        # status directly (the store write barrier now forbids creating
+        # one through the API).
+        source = _new_store(self.root, "source.sqlite3")
+        row_id = _add(source)
+        connection = sqlite3.connect(source.db_path)
+        try:
+            connection.execute(
+                "UPDATE diagnostic_records SET evidence_status = 'PROVEN' WHERE id = ?",
+                (row_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        package = export_records(source)
+        statuses = [r["evidence_status"] for r in package["records"]]
+        self.assertEqual(statuses, ["PROVEN"])
+
+    def test_lenient_import_downgrades_proven_and_preserves_claim(self):
+        # Import decision (2026-11-13): lenient import downgrades PROVEN
+        # to UNPROVEN and preserves the original claim in the report,
+        # tied to the stored row via index and inserted id.
+        target = _new_store(self.root, "target.sqlite3")
+        package = _valid_package([
+            _valid_record(evidence_status="UNPROVEN", confidence="low"),
+            _valid_record(evidence_status="PROVEN", confidence="high"),
+            _valid_record(evidence_status="PARTIALLY_PROVEN", confidence="medium"),
+        ])
+
+        report = import_package_lenient(target, package)
+
+        self.assertEqual(report["record_count"], 3)
+        self.assertEqual(len(report["inserted_ids"]), 3)
+        self.assertEqual(len(report["downgraded"]), 1)
+        entry = report["downgraded"][0]
+        self.assertEqual(entry["index"], 1)
+        self.assertEqual(entry["original_evidence_status"], "PROVEN")
+        self.assertEqual(entry["final_evidence_status"], "UNPROVEN")
+        self.assertEqual(entry["inserted_id"], report["inserted_ids"][1])
+
+        stored = target.list_records(limit=10)
+        # list_records is newest-first; compare as a multiset.
+        self.assertEqual(
+            sorted(r["evidence_status"] for r in stored),
+            sorted(["UNPROVEN", "UNPROVEN", "PARTIALLY_PROVEN"]),
+        )
+        # no PROVEN row reached the store
+        self.assertTrue(all(r["evidence_status"] != "PROVEN" for r in stored))
+
+    def test_lenient_import_without_proven_is_unchanged(self):
+        target = _new_store(self.root, "target.sqlite3")
+        package = _valid_package([
+            _valid_record(evidence_status="UNPROVEN"),
+            _valid_record(evidence_status="BLOCKED", confidence="low"),
+        ])
+
+        report = import_package_lenient(target, package)
+
+        self.assertEqual(report["downgraded"], [])
+        self.assertEqual(report["record_count"], 2)
+        self.assertEqual(len(target.list_records(limit=10)), 2)
+
+    def test_strict_import_still_rejects_proven_package(self):
+        # The strict entry point keeps its all-or-nothing rejection.
+        target = _new_store(self.root, "target.sqlite3")
+        package = _valid_package([
+            _valid_record(evidence_status="UNPROVEN"),
+            _valid_record(evidence_status="PROVEN"),
+        ])
+        with self.assertRaises(PortabilityError):
+            import_package(target, package)
+        self.assertEqual(target.list_records(), [])
 
 
 if __name__ == "__main__":
