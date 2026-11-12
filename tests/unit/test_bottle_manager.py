@@ -20,7 +20,7 @@ class BottleManagerReadOnlyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
-        patcher = mock.patch("wine_ai.bottle_manager.create.Path.home", return_value=self.home)
+        patcher = mock.patch("wine_ai.bottle_manager.manager.Path.home", return_value=self.home)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.manager = BottleManager()
