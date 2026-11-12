@@ -14,9 +14,10 @@ machine identifier. This enables correlation across sessions on the
 same machine while making offline path-guessing infeasible for anyone
 who only holds the hash. Stated limits: it is NOT anonymity; same-
 machine linking is by design; any local process able to read the
-machine identifier can recompute it; different machines never produce
-the same pseudonym for the same path; and the value never leaves the
-machine (the export allow-list never includes it). When no machine
+machine identifier can recompute it; independently generated machine
+identifiers normally produce different pseudonyms, but cloned images may
+share an identifier and truncated hashes have a non-zero collision
+probability; and the value is excluded from the export allow-list. When no machine
 identifier is readable, no pseudonym is produced at all (fail-closed).
 
 Runtime contract
