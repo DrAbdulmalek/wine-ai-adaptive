@@ -189,8 +189,10 @@ def prefix_hash_of(
     machines with the same machine identifier. Independently generated
     machine identifiers normally produce different pseudonyms, but cloned
     images may share machine-id values and 128-bit truncation has a
-    non-zero collision probability. This is pseudonymization, not a
-    guarantee of globally unique device identity.
+    non-zero collision probability. The machine-id is readable by local
+    processes, so it is not a secret against a local attacker; external
+    path-guessing resistance depends on not exporting the machine-id with
+    the hash. This is pseudonymization, not globally unique device identity.
 
     ``key`` overrides the derived local key (tests use this). Without
     any usable key the pseudonym is not produced at all (fail-closed).
