@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from wine_ai.knowledge.store import (
     KnowledgeStore,
@@ -125,6 +126,43 @@ class KnowledgeStoreTests(unittest.TestCase):
 
         self.assertEqual(before, after, "PROVEN rejection must not leave a partial insert")
         self.assertEqual(after, 1)  # only the seed row exists
+
+    def test_proven_rejection_happens_before_transaction(self):
+        # Reviewer requirement (unified plan §3, package B): the PROVEN
+        # check must happen BEFORE any write transaction opens. If the
+        # validation is ever moved inside the transaction loop, this
+        # test fails because _connect() — the seam every write
+        # transaction must pass — would be reached during rejection.
+        bad = self.valid_record()
+        bad["evidence_status"] = "PROVEN"
+
+        def forbidden_connect(*args, **kwargs):
+            raise AssertionError(
+                "a write transaction was opened during PROVEN rejection; "
+                "validation must precede any transaction (§2 batch atomicity)"
+            )
+
+        with mock.patch.object(self.store, "_connect", side_effect=forbidden_connect):
+            with self.assertRaisesRegex(ValueError, "trusted evidence provenance"):
+                self.store.add_records_atomic([bad])
+        # A single valid record must still be insertable through the same
+        # seam afterwards (the patch is scoped to the rejection only).
+
+    def test_rejection_is_atomic_no_partial_insert(self):
+        # Reviewer test (unified plan §3): a batch with valid records
+        # before AND after the PROVEN one must leave the store byte-for-
+        # byte unchanged — zero partial inserts in either direction.
+        good1 = self.valid_record()
+        good1["wine_version"] = "11.0"
+        good2 = self.valid_record()
+        good2["wine_version"] = "11.1"
+        bad = self.valid_record()
+        bad["evidence_status"] = "PROVEN"
+
+        before = self.store.list_records()
+        with self.assertRaisesRegex(ValueError, "trusted evidence provenance"):
+            self.store.add_records_atomic([good1, bad, good2])
+        self.assertEqual(self.store.list_records(), before)
 
 
 if __name__ == "__main__":
