@@ -31,6 +31,17 @@ class LogParserTests(unittest.TestCase):
                 "PARTIALLY_PROVEN",
             )
 
+    def test_diagnostics_do_not_disclose_parent_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private-user-directory"
+            private_dir.mkdir()
+            path = private_dir / "wine.log"
+            path.write_text("ordinary log")
+            data, evidence = inspect_log(str(path))
+            self.assertEqual(data["path"], "wine.log")
+            self.assertNotIn(str(private_dir), repr(data))
+            self.assertNotIn(str(private_dir), repr(evidence))
+
     def test_rejects_symlink_without_reading_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target.log"
