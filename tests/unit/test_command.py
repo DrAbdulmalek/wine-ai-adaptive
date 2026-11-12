@@ -43,10 +43,12 @@ class RunReadOnlyAllowListTests(unittest.TestCase):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
 
         completed = SimpleNamespace(returncode=0, stdout="", stderr="")
-        with mock.patch("wine_ai.command.shutil.which", return_value="/trusted/bin/vulkaninfo"), \\
-             mock.patch("wine_ai.command.Path.stat", new=fake_stat), \\
-             mock.patch("wine_ai.command.os.access", return_value=True), \\
-             mock.patch("wine_ai.command.subprocess.run", return_value=completed) as run:
+        with (
+            mock.patch("wine_ai.command.shutil.which", return_value="/trusted/bin/vulkaninfo"),
+            mock.patch("wine_ai.command.Path.stat", new=fake_stat),
+            mock.patch("wine_ai.command.os.access", return_value=True),
+            mock.patch("wine_ai.command.subprocess.run", return_value=completed) as run,
+        ):
             result = run_read_only(["vulkaninfo", "--summary"])
         self.assertIsNone(result.error)
         self.assertEqual(result.argv, ("/trusted/bin/vulkaninfo", "--summary"))
