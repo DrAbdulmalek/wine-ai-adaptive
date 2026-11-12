@@ -57,6 +57,14 @@ def inspect_log_with_content(path: str):
         after = os.fstat(fd)
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise OSError("Log identity changed while open")
+        before_signature = (
+            before.st_size, before.st_mtime_ns, before.st_ctime_ns
+        )
+        after_signature = (
+            after.st_size, after.st_mtime_ns, after.st_ctime_ns
+        )
+        if before_signature != after_signature or after.st_size != len(raw):
+            raise OSError("Log changed while it was being read")
         content = raw.decode("utf-8", errors="replace")
         size = len(raw)
     except (OSError, ValueError) as exc:
