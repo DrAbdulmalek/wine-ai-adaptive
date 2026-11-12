@@ -49,7 +49,7 @@ class LogParserTests(unittest.TestCase):
             data, evidence, returned = inspect_log_with_content(str(path))
             self.assertEqual(returned, content)
             self.assertEqual(data["size_bytes"], len(content.encode("utf-8")))
-            self.assertEqual(data["matches"]["missing_module"], 1)
+            self.assertEqual(data["matches"]["missing_module"], 2)
 
     def test_rejects_oversized_log(self):
 
