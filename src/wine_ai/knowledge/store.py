@@ -36,8 +36,9 @@ Security properties implemented here:
   ``CHECK`` coverage: ``launcher`` (an allow-listed launcher name, never
   a path) and ``prefix_hash`` (a machine-keyed HMAC-SHA256 pseudonym
   of the prefix path, produced by ``environment.snapshot.prefix_hash_of``:
-  guessing-resistant while the local key stays on the machine, never
-  exported, and NOT anonymity — same-machine correlation is by design;
+  excluded from export and NOT anonymity or a secret against local
+  processes; cloned machine identifiers can enable cross-image linkage,
+  and truncated hashes have a non-zero collision probability;
   the raw path is never accepted or stored). Version 1, 2 and 3
   databases are upgraded by atomic migrations whose pre-checks (stored
   CREATE statement and column set) run *inside* the same ``BEGIN
