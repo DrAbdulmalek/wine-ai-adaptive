@@ -34,7 +34,6 @@ git clone https://github.com/DrAbdulmalek/wine-ai-adaptive.git
 cd wine-ai-adaptive
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
@@ -61,7 +60,7 @@ Check the exact application release, vendor requirements, and licensing terms. D
 
 Use a dedicated test environment for each application. Never mix Trados and memoQ files, and do not experiment in `~/.wine` or a production prefix. Do not create or initialize a prefix until the exact release requirements and recovery plan have been reviewed.
 
-The current Bottle Manager's create operation creates an empty, uninitialized directory only. It does **not** create a usable Wine prefix and is not equivalent to running `wineboot`.
+Bottle creation through the current Bottle Manager is **disabled** and returns `BLOCKED` without filesystem writes. Do not rely on it as a way to create a prefix; the feature remains gated pending a stronger, independently reviewed security design.
 
 ## 6. Diagnose a failure
 
