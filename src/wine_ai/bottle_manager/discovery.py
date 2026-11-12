@@ -5,10 +5,13 @@ Filesystem traversal is performed one directory component at a time with
 O_DIRECTORY|O_NOFOLLOW and directory file descriptors. This prevents a
 symlink in any ancestor component from redirecting inspection.
 
-The remaining limits are explicit: a privileged actor able to replace
-mounts or mutate the same directory concurrently can still affect the
-filesystem namespace. The module fails closed when an opened object no
-longer matches its expected type.
+The remaining limits are explicit: inode numbers may be recycled after
+removal, and a privileged actor able to replace mounts can affect the
+filesystem namespace. The module compares the inode captured by readdir
+with a no-follow stat and the subsequently opened descriptor; this detects
+ordinary name replacement but is not a globally unique object identifier.
+The module fails closed when an opened object no longer matches its expected
+type or captured identity.
 """
 from __future__ import annotations
 
@@ -457,6 +460,17 @@ def discover_prefixes(
             return
 
         try:
+            try:
+                root_device = os.fstat(root_fd).st_dev
+            except OSError as exc:
+                evidence.append(Evidence(
+                    "prefix_discovery", EvidenceStatus.BLOCKED,
+                    "Container root identity could not be verified",
+                    f"bottle_manager.discovery:{origin}",
+                    {"path": str(root), "error": f"{type(exc).__name__} (errno={exc.errno})"},
+                ))
+                return
+
             entries_to_scan: list[tuple[str, int, int, int]] = []
             overflow = False
             try:
@@ -465,9 +479,25 @@ def discover_prefixes(
                         if len(entries_to_scan) == MAX_SCAN_SUBDIRS:
                             overflow = True
                             break
+                        # inode() is the directory-entry inode captured by
+                        # readdir; stat() supplies type and device. A mismatch
+                        # means the name changed between enumeration and stat.
+                        enumerated_ino = entry.inode()
                         entry_info = entry.stat(follow_symlinks=False)
+                        if (
+                            enumerated_ino <= 0
+                            or entry_info.st_dev != root_device
+                            or entry_info.st_ino != enumerated_ino
+                        ):
+                            evidence.append(Evidence(
+                                "prefix_candidate", EvidenceStatus.BLOCKED,
+                                "Container entry changed identity during enumeration",
+                                f"bottle_manager.discovery:{origin}",
+                                {"path": str(root / entry.name)},
+                            ))
+                            continue
                         entries_to_scan.append((
-                            entry.name, entry_info.st_dev, entry_info.st_ino,
+                            entry.name, root_device, enumerated_ino,
                             entry_info.st_mode,
                         ))
             except OSError as exc:
