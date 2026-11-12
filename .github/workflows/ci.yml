@@ -30,6 +30,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Documentation contract checks (unified plan §5.1/§5.2): the CAT
+  # compatibility matrix must never claim evidence without an existing
+  # sanitized log, and STATUS.md stays the single source of truth.
+  # Runs once, not per Python version; the unit tests for both scripts
+  # (tests/unit/test_cat_matrix.py, test_release_docs.py) run in the
+  # tests job.
+  docs-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: CAT compatibility matrix check
+        run: python scripts/check_cat_matrix.py
+
+      - name: STATUS.md single-source check
+        run: python scripts/check_status_refs.py
+
   tests:
     runs-on: ubuntu-latest
     strategy:
