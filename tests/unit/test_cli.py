@@ -50,6 +50,13 @@ class DiagnoseCommandTests(unittest.TestCase):
         # No raw log lines in the JSON payload
         self.assertNotIn("import_dll Library foo.dll not found", out)
 
+    def test_diagnose_does_not_reopen_log_after_inspection(self):
+        self.log.write_text("err: exception 0xC0000005 at 0x7fff\n", encoding="utf-8")
+        with mock.patch.object(Path, "read_text", side_effect=AssertionError("second read forbidden")):
+            code, out = self._run(["diagnose", "--log", str(self.log), "--json"])
+        self.assertEqual(code, 0)
+        self.assertIn("0xC0000005", json.loads(out)["findings"][0]["code"])
+
     def test_no_raw_log_text_in_human_output(self):
         self.log.write_text(
             "err: exception 0xC0000005 at 0x7fff\n",
