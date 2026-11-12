@@ -92,5 +92,19 @@ class KnowledgeStoreTests(unittest.TestCase):
             KnowledgeStore(other_db)
 
 
+    def test_rejects_caller_supplied_proven_status_at_store_boundary(self):
+        record = self.valid_record()
+        record["evidence_status"] = "PROVEN"
+
+        with self.assertRaisesRegex(ValueError, "trusted evidence provenance"):
+            self.store.add_record(**record)
+
+        with self.assertRaisesRegex(ValueError, "trusted evidence provenance"):
+            self.store.add_records_atomic([record])
+
+        self.assertEqual(self.store.list_records(), [])
+
+
+
 if __name__ == "__main__":
     unittest.main()
