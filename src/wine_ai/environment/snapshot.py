@@ -11,8 +11,9 @@ display name (its base name), the only value safe enough to persist as
 ``prefix_id``. The absolute path can additionally be reduced to
 ``prefix_hash``: a truncated *HMAC-SHA256* pseudonym keyed by a local
 machine identifier. This enables correlation across sessions on the
-same machine while making offline path-guessing infeasible for anyone
-who only holds the hash. Stated limits: it is NOT anonymity; same-
+same machine. The hash alone does not reveal the path, but resistance to
+offline guessing depends on not disclosing the machine identifier with
+it. Stated limits: it is NOT anonymity; same-
 machine linking is by design; any local process able to read the
 machine identifier can recompute it; independently generated machine
 identifiers normally produce different pseudonyms, but cloned images may
