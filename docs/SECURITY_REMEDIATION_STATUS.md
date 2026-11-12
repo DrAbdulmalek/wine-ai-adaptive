@@ -22,6 +22,25 @@ The current registry uses directory descriptors, no-follow opens, advisory locki
 
 A future design must use a genuinely separate security principal (not merely another process under the same UID), a minimal authenticated IPC contract, strict path/name allow-lists, descriptor-relative operations inside the broker, explicit ownership/mode policy, bounded requests, and an audit trail that excludes absolute home paths and sensitive content. The broker must not execute Wine or shell commands. Require independent review and race/fault-injection tests before enabling writes.
 
+### 1.1 Isolation-level decision (2026-11-13)
+
+Decision matrix, agreed during the patch review round. Recorded before any further code so no limited technical improvement is promoted into an unproven security claim.
+
+| Level | What it closes | What stays open | Cost | Decision |
+|---|---|---|---|---|
+| L1: Linux `O_TMPFILE` (+ `linkat`/`renameat2` publication) | Unnamed temporary file cannot be preempted or swapped by name before publication | same-UID race on the final publication window; concurrent writers remain last-writer-wins (check-then-publish is not CAS) | low | **Adopted as a hardening layer only** — never described as closing same-UID |
+| L2: Registry directory owned by a different system user (0700) | same-UID writes at the directory level | requires pre-provisioning (user creation, permissions), breaks self-contained install | medium | **Rejected** (installation complexity, not portable) |
+| L3: Isolated broker + authenticated IPC | same-UID + concurrency + local tampering | logical TOCTOU inside the broker; needs its own review | high (systemd/root setup) | **Deferred to v2** with independent security review |
+
+**Decision:** adopt L1 as an independent hardening improvement with honest documentation that same-UID remains an OPEN boundary in portable POSIX; keep the current identity checks and their documented limits; make no CAS claim against a hostile same-UID process.
+
+**Rejected patch designs (review round 2026-11-13, do not re-apply as-is):**
+
+- A RENAME_EXCHANGE-based "compare then rollback" publication: the comparison happens after the exchange, so it is not an atomic precondition; a rollback after a concurrent write can move or delete another writer's content via the temporary name; `os.write()` needs partial-write handling; renameat2 error mapping does not match the FileExistsError handling of the first path; the lock file lacks ownership/type/mode checks; fixed probe names in `is_supported()` can be preempted; temporary-file cleanup needs a contract that never deletes another process's files.
+- An O_TMPFILE variant presented as closing the race: existence-check → publish/swap is not a CAS between the observed and the published state; two concurrent writers can still end last-writer-wins; `/proc/self/fd` + `linkat` needs real kernel/filesystem testing before being claimed as a guarantee.
+
+**Impact on create_bottle():** stays BLOCKED. Safe atomic registry writes do not, by themselves, prove the directory-creation and prefix-registration path safe; re-enabling requires the independent review of the create protocol described above, not a registry mechanism swap.
+
 ## 2. Evidence provenance boundary
 
 The SQLite vocabulary constraint only restricts status strings; it cannot prove that a claim is authentic. The bridge already rejects PROVEN, but the low-level store previously accepted it. The public KnowledgeStore write boundary now also rejects new PROVEN values. Existing stored rows are not rewritten, and historical reads/exports are not reclassified by this change.
