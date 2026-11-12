@@ -1,7 +1,6 @@
 """Read-only BottleManager facade tests; Create Bottle is intentionally disabled."""
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import unittest
@@ -11,7 +10,7 @@ from unittest import mock
 from wine_ai.bottle_manager.manager import BottleManager
 from wine_ai.bottle_manager.create import MANAGED_ROOT_PARTS
 from wine_ai.bottle_manager.registry import (
-    REGISTRY_VERSION, STATE_EMPTY_UNINITIALIZED, BottleRegistry,
+    STATE_EMPTY_UNINITIALIZED, BottleRegistry,
 )
 from wine_ai.evidence import EvidenceStatus
 
