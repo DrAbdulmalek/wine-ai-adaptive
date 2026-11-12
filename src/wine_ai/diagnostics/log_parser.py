@@ -31,6 +31,7 @@ PATTERNS = {
 def inspect_log_with_content(path: str):
     """Read once through a no-follow descriptor and return parsed metadata and text."""
     log_path = Path(path).expanduser()
+    display_name = log_path.name or "log"
     fd = None
     try:
         if not hasattr(os, "O_NOFOLLOW"):
@@ -60,10 +61,16 @@ def inspect_log_with_content(path: str):
         size = len(raw)
     except (OSError, ValueError) as exc:
         return (
-            {"path": str(log_path), "read_error": str(exc)},
+            {"path": display_name, "read_error": (
+                f"{type(exc).__name__} (errno={exc.errno})"
+                if isinstance(exc, OSError) else str(exc)
+            )},
             [Evidence("log_read", EvidenceStatus.BLOCKED,
-                      "Log could not be safely read", str(log_path),
-                      {"error": str(exc)})],
+                      "Log could not be safely read", f"log:{display_name}",
+                      {"error": (
+                          f"{type(exc).__name__} (errno={exc.errno})"
+                          if isinstance(exc, OSError) else str(exc)
+                      )})],
             None,
         )
     finally:
@@ -73,12 +80,12 @@ def inspect_log_with_content(path: str):
     matches = {name: len(pattern.findall(content)) for name, pattern in PATTERNS.items()}
     found = {name: count for name, count in matches.items() if count > 0}
     status = EvidenceStatus.PARTIALLY_PROVEN if found else EvidenceStatus.UNPROVEN
-    data = {"path": str(log_path), "size_bytes": size, "matches": matches,
+    data = {"path": display_name, "size_bytes": size, "matches": matches,
             "classification": list(found)}
     evidence = [Evidence(
         "log_patterns", status,
         "Pattern matches are heuristic indicators, not root-cause proof",
-        str(log_path), {"matches": matches},
+        f"log:{display_name}", {"matches": matches},
     )]
     return data, evidence, content
 
