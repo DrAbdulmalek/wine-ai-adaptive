@@ -190,10 +190,10 @@ class BottleRegistry:
         except OSError as exc:
             raise BottleRegistryError(f"Could not open registry lock ({exc.errno})") from exc
         try:
-            info = os.fstat(fd)
-            _verify_file_identity(info, what="Registry lock")
             if created:
                 os.fchmod(fd, 0o600)
+            info = os.fstat(fd)
+            _verify_file_identity(info, what="Registry lock")
             return fd
         except Exception:
             os.close(fd)
