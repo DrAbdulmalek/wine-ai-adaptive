@@ -5,6 +5,8 @@ read-only diagnostic commands, regardless of caller.
 """
 
 import unittest
+import sys
+from unittest import mock
 
 from wine_ai.command import CommandResult, run_read_only
 
@@ -34,13 +36,10 @@ class RunReadOnlyAllowListTests(unittest.TestCase):
         )
 
     def test_allowlisted_program_accepts_only_known_arguments(self):
-        result = run_read_only(["vulkaninfo", "--summary"])
-        # vulkaninfo may not exist in the test environment; what must
-        # hold is that the allow-list let it through to execution.
+        with mock.patch("wine_ai.command.shutil.which", return_value=sys.executable):
+            result = run_read_only(["vulkaninfo", "--summary"])
         self.assertIsNotNone(result)
-        self.assertNotEqual(
-            result.error, "command not in read-only allow-list"
-        )
+        self.assertNotEqual(result.error, "command not in read-only allow-list")
 
     def test_custom_executable_path_is_rejected(self):
         result = run_read_only(["/opt/custom/bin/wine", "--version"])
