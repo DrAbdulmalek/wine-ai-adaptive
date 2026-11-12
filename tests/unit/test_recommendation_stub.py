@@ -42,6 +42,42 @@ class RecommendationStubContractTests(unittest.TestCase):
         self.assertEqual(set(payload), {"status", "warnings"})
         self.assertIsInstance(payload["warnings"], list)
 
+    def test_recommend_stub_never_returns_recommendation(self):
+        # Reviewer requirement: the stub must never pretend to recommend.
+        # It carries no recommendation-like field, no result list, and
+        # the module never touches the evidence store at all.
+        payload = recommendation.build_status_payload()
+        self.assertEqual(payload["status"], "NO_PROVEN_EVIDENCE")
+        self.assertEqual(
+            set(payload), {"status", "warnings"},
+            "no recommendation/result field may appear in the payload",
+        )
+        for banned_key in ("recommendation", "recommendations", "results",
+                           "items", "evidence", "records"):
+            self.assertNotIn(banned_key, payload)
+        module_src = _module_source()
+        self.assertNotIn("from wine_ai.knowledge", module_src)
+        self.assertNotIn("import wine_ai.knowledge", module_src)
+        self.assertNotIn("KnowledgeStore", module_src)
+
+    def test_recommend_stub_exit_code_is_expected(self):
+        # Reviewer requirement: the documented contract exit code is 0 —
+        # NO_PROVEN_EVIDENCE is expected behavior, not a fault.
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = recommendation.main()
+        self.assertEqual(code, 0)
+
+
+def _module_source() -> str:
+    import inspect
+    from wine_ai.recommendation import status as _status
+    return (
+        inspect.getsource(recommendation)
+        + "\n"
+        + inspect.getsource(_status)
+    )
+
 
 if __name__ == "__main__":
     unittest.main()
