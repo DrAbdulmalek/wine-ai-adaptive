@@ -31,8 +31,11 @@ Documented residual (honest limit, same class as SEC-01): identity
 revalidation compares ``(dev, ino)``; a same-filesystem swap that
 recycles the exact inode (observed when ``rmdir`` is immediately
 followed by ``mkdir`` on ext4/tmpfs) is indistinguishable from the
-original entry. Hostile same-uid processes remain out of scope; the
-mode/symlink checks narrow the practical window further.
+original entry. The advisory lock serializes only cooperating writers. A hostile process
+running under the same UID can still mutate directory entries and race the
+final check-to-rename interval; the current implementation does not claim
+protection against that actor. The mode and symlink checks reduce exposure
+but are not a same-UID isolation boundary.
 
 Deliberately out of scope (owner disposition, 2026-11-11 independent
 review of the rejected ``feature/bottle-manager`` draft): bottle
