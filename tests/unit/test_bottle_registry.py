@@ -300,6 +300,43 @@ class RegistrySecurityTests(unittest.TestCase):
         # the real registry survived untouched
         self.assertEqual(os.lstat(self.root / REGISTRY_NAME).st_ino, reg_ino)
 
+    def test_atomic_write_revalidates_identity_after_temp_fsync(self):
+        self.add_bottle_dir("alpha")
+        self.add_bottle_dir("beta")
+        self.registry.register(make_record("alpha", self.root))
+        real_fsync = os.fsync
+        swapped = {"done": False}
+
+        def swap_registry_after_temp_sync(fd):
+            if not swapped["done"]:
+                swapped["done"] = True
+                os.rename(self.root / REGISTRY_NAME, self.root / "registry.original")
+                replacement = self.root / REGISTRY_NAME
+                replacement.write_text(
+                    json.dumps({"registry_version": REGISTRY_VERSION, "bottles": {}}),
+                    encoding="utf-8",
+                )
+                os.chmod(replacement, 0o600)
+            return real_fsync(fd)
+
+        with mock.patch("wine_ai.bottle_manager.registry.os.fsync",
+                        side_effect=swap_registry_after_temp_sync):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.register(make_record("beta", self.root))
+        self.assertTrue(swapped["done"])
+        self.assertEqual(self.registry.read(), {})
+        self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(self.root)))
+
+    def test_temp_registry_mode_is_exact_under_restrictive_umask(self):
+        self.add_bottle_dir("alpha")
+        previous = os.umask(0o777)
+        try:
+            self.registry.register(make_record("alpha", self.root))
+        finally:
+            os.umask(previous)
+        info = os.lstat(self.root / REGISTRY_NAME)
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+
     def test_register_after_external_swap_reads_fresh_state(self):
         # Documented behavior: register never caches identities across calls.
         self.add_bottle_dir("alpha")
