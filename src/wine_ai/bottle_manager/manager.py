@@ -1,16 +1,10 @@
 """Safe facade over the approved Create Bottle contract and the registry.
 
-This module is the Phase-B rebuild of the 2026-11-11
-``feature/bottle-manager`` draft. Per the owner's independent review
-disposition (2026-11-11), the rebuild keeps exactly three capabilities:
-
-- ``create_bottle`` — the audited, descriptor-relative Create-Empty-Bottle
-  operation (:mod:`wine_ai.bottle_manager.create`), followed by an
-  identity-pinned registration in the managed registry
-  (:mod:`wine_ai.bottle_manager.registry`);
-- read-only inspection of registered bottles;
-- reconciliation (``verify_bottle`` / ``orphans``) between the registry
-  and the managed root.
+This module provides read-only inspection and reconciliation of managed
+bottle records. The public Create Bottle write path is intentionally disabled:
+its same-UID mkdir/open namespace race has no safe in-process POSIX fix, and
+must not be treated as an approved capability until a stronger OS boundary
+is designed and independently tested.
 
 Deliberately absent (each a separately approved future feature, never a
 silent gap): initialization with ``wineboot``, ``winetricks`` recipe
@@ -42,7 +36,7 @@ __all__ = [
 ]
 
 class BottleManager:
-    """Manage empty, uninitialized bottle directories under the managed root."""
+    """Inspect managed bottle records; creation remains fail-closed and disabled."""
 
     def __init__(self) -> None:
         self._registry = BottleRegistry()
@@ -74,12 +68,7 @@ class BottleManager:
     # -- write capability (create only) -----------------------------------------
 
     def create_bottle(self, name: str) -> tuple[dict[str, Any] | None, list[Evidence]]:
-        """Create one empty 0700 directory and register its pinned identity.
-
-        No Wine, no winetricks, no subprocess, no deletion. The returned
-        record carries ``state == EMPTY_UNINITIALIZED`` and the pinned
-        ``(dev, ino)`` identity used by :meth:`verify_bottle`.
-        """
+        """Fail closed: Create Bottle is disabled pending a safe OS design."""
         record, evidences = _create_empty_bottle(name)
         if record is None:
             return None, evidences
