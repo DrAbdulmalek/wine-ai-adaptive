@@ -7,9 +7,15 @@ symlink in any ancestor component from redirecting inspection.
 
 The remaining limits are explicit: inode numbers may be recycled after
 removal, and a privileged actor able to replace mounts can affect the
-filesystem namespace. The module compares the inode captured by readdir
-with a no-follow stat and the subsequently opened descriptor; this detects
-ordinary name replacement but is not a globally unique object identifier.
+filesystem namespace. Identity binding compares the no-follow stat
+captured at enumeration time with ``fstat`` of the descriptor opened
+``dir_fd``-relative to the scanned root (same stat family). The raw
+readdir ``d_ino`` is deliberately not used as an identity source:
+layered filesystems such as overlayfs (and some network filesystems)
+report values that differ structurally from statx, so comparing them
+denies service to every candidate regardless of attacker activity.
+This detects ordinary name replacement but is not a globally unique
+object identifier.
 The module fails closed when an opened object no longer matches its expected
 type or captured identity.
 """
@@ -460,17 +466,6 @@ def discover_prefixes(
             return
 
         try:
-            try:
-                root_device = os.fstat(root_fd).st_dev
-            except OSError as exc:
-                evidence.append(Evidence(
-                    "prefix_discovery", EvidenceStatus.BLOCKED,
-                    "Container root identity could not be verified",
-                    f"bottle_manager.discovery:{origin}",
-                    {"path": str(root), "error": f"{type(exc).__name__} (errno={exc.errno})"},
-                ))
-                return
-
             entries_to_scan: list[tuple[str, int, int, int]] = []
             overflow = False
             try:
@@ -479,25 +474,16 @@ def discover_prefixes(
                         if len(entries_to_scan) == MAX_SCAN_SUBDIRS:
                             overflow = True
                             break
-                        # inode() is the directory-entry inode captured by
-                        # readdir; stat() supplies type and device. A mismatch
-                        # means the name changed between enumeration and stat.
-                        enumerated_ino = entry.inode()
+                        # The no-follow stat snapshot is the identity
+                        # expectation. readdir's d_ino is intentionally not
+                        # consulted: on overlayfs it differs structurally from
+                        # statx and would false-block every candidate. The
+                        # snapshot is verified against fstat of the descriptor
+                        # opened dir_fd-relative below (same stat family),
+                        # which is the race binding that matters.
                         entry_info = entry.stat(follow_symlinks=False)
-                        if (
-                            enumerated_ino <= 0
-                            or entry_info.st_dev != root_device
-                            or entry_info.st_ino != enumerated_ino
-                        ):
-                            evidence.append(Evidence(
-                                "prefix_candidate", EvidenceStatus.BLOCKED,
-                                "Container entry changed identity during enumeration",
-                                f"bottle_manager.discovery:{origin}",
-                                {"path": str(root / entry.name)},
-                            ))
-                            continue
                         entries_to_scan.append((
-                            entry.name, root_device, enumerated_ino,
+                            entry.name, entry_info.st_dev, entry_info.st_ino,
                             entry_info.st_mode,
                         ))
             except OSError as exc:

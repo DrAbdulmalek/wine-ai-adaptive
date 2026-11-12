@@ -35,6 +35,9 @@ class BottleManagerReadOnlyTests(unittest.TestCase):
         app_dir = self.home / ".local" / "share" / "wine-ai-adaptive"
         os.chmod(app_dir, 0o700)
         os.chmod(self.root(), 0o700)
+        # Hermetic under any umask: pin the user-owned intermediates too.
+        os.chmod(self.home / ".local", 0o700)
+        os.chmod(self.home / ".local" / "share", 0o700)
 
     def test_create_is_blocked_without_filesystem_side_effects(self):
         record, evidence = self.manager.create_bottle("alpha")

@@ -110,19 +110,33 @@ def _verify_file_identity(info: os.stat_result, *, what: str) -> None:
 
 
 def _verify_managed_directory(info: os.stat_result, *, component: str, private: bool) -> None:
-    """Enforce ownership and non-writable managed-path components.
+    """Enforce ownership and writability policy on managed-path components.
 
-    XDG parent directories may be readable by other users, but must not be
-    writable by group/others. The application and prefixes directories are
-    private and must be exactly 0700.
+    Application-owned components (``private=True``) must be owned by the
+    current user and exactly 0700. XDG parent directories (``.local``,
+    ``.local/share``) are user-owned, not application-owned: they must
+    never be world-writable, and a group-writable bit is accepted only
+    when the owning group is the user's own primary group. That pattern
+    (0775 on ``~/.local``) is the normal result of user-private-group
+    setups — Debian/Ubuntu desktops with umask 002 — and the group is
+    the user alone, so treating it as an untrusted boundary would make
+    the registry refuse to open on those systems. A group-writable
+    component owned by any other group is rejected.
     """
     if not stat.S_ISDIR(info.st_mode):
         raise BottleRegistryError(f"Managed path component is not a directory: {component}")
     if not hasattr(os, "geteuid") or info.st_uid != os.geteuid():
         raise BottleRegistryError(f"Managed path component has unexpected ownership: {component}")
     mode = stat.S_IMODE(info.st_mode)
-    if mode & 0o022:
-        raise BottleRegistryError(f"Managed path component is group/world-writable: {component}")
+    if mode & 0o002:
+        raise BottleRegistryError(f"Managed path component is world-writable: {component}")
+    if (mode & 0o020) and not private:
+        own_primary_group = hasattr(os, "getegid") and info.st_gid == os.getegid()
+        if not own_primary_group:
+            raise BottleRegistryError(
+                "Managed path component is group-writable by a group other than "
+                f"the user's primary group: {component}"
+            )
     if private and mode != 0o700:
         raise BottleRegistryError(f"Private managed directory permissions must be exactly 0700: {component}")
 

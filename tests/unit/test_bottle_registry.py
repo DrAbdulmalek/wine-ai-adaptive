@@ -54,6 +54,11 @@ def prepare_root(home: Path) -> Path:
     root = app / "prefixes"
     root.mkdir(mode=0o700)
     root.chmod(0o700)
+    # Hermetic under any umask: parents=True creates the intermediates
+    # with the process umask, and the registry mode gate rejects
+    # group/world-writable components, so pin every managed component.
+    (home / ".local").chmod(0o700)
+    (home / ".local" / "share").chmod(0o700)
     return root
 
 
@@ -406,6 +411,42 @@ class RegistrySecurityTests(unittest.TestCase):
             os.umask(previous)
         info = os.lstat(self.root / REGISTRY_NAME)
         self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+
+    def test_xdg_parent_group_writable_by_primary_group_is_accepted(self):
+        # Debian/Ubuntu user-private-group desktops (umask 002) leave
+        # ~/.local at 0775 owned by the user's own primary group. That
+        # group is the user alone, so the registry must still open.
+        self.add_bottle_dir("alpha")
+        local = self.home / ".local"
+        local.chmod(0o775)
+        (local / "share").chmod(0o775)
+        self.registry.register(make_record("alpha", self.root))
+        self.assertEqual(self.registry.get("alpha")["name"], "alpha")
+
+    def test_xdg_parent_world_writable_is_rejected(self):
+        self.add_bottle_dir("alpha")
+        (self.home / ".local").chmod(0o777)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.register(make_record("alpha", self.root))
+        # fail-closed: nothing was written
+        self.assertFalse((self.root / REGISTRY_NAME).exists())
+
+    def test_xdg_parent_group_writable_by_foreign_group_is_rejected(self):
+        # Simulate a shared-group directory without chown: claim a
+        # different primary group for the process, so 0775 ownership
+        # no longer matches the user's primary group.
+        if not hasattr(os, "getegid"):
+            self.skipTest("no getegid on this platform")
+        self.add_bottle_dir("alpha")
+        local = self.home / ".local"
+        local.chmod(0o775)
+        with mock.patch(
+            "wine_ai.bottle_manager.registry.os.getegid",
+            return_value=os.getegid() + 1,
+        ):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.register(make_record("alpha", self.root))
+        self.assertFalse((self.root / REGISTRY_NAME).exists())
 
     def test_register_after_external_swap_reads_fresh_state(self):
         # Documented behavior: register never caches identities across calls.
