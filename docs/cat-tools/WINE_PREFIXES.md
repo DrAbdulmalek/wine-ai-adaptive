@@ -16,7 +16,7 @@ A Wine prefix contains registry data, installed components, configuration, and a
 
 `wine-ai prefixes` discovers prefixes and reports structured information; it does not create, initialize, clone, back up, restore, or delete them.
 
-The Bottle Manager's current create operation is deliberately limited to creating an **empty uninitialized directory** and registering it. This is not a Wine prefix. Initialization and application execution are outside the current safe management interface.
+Bottle creation through the current Bottle Manager is **disabled** and returns `BLOCKED` without filesystem writes. Do not rely on it to create even an empty directory. The feature remains gated pending a stronger, independently reviewed security design. Initialization and application execution are also outside the current safe management interface.
 
 Do not infer that a directory named `trados-test` or `memoq-test` is a valid prefix. Do not run `wineboot -u` merely to make the directory look initialized.
 
