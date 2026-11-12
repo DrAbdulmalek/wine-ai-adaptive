@@ -1096,6 +1096,15 @@ class KnowledgeStore:
             EVIDENCE_STATUSES,
             "evidence_status",
         )
+        # The low-level store has no provenance verifier or approved trust
+        # anchor. Never let a caller promote an arbitrary record to PROVEN.
+        # Historical rows remain readable, but new writes must stay below
+        # PROVEN until a separately reviewed verifier is integrated.
+        if evidence_status == "PROVEN":
+            raise ValueError(
+                "PROVEN is disabled in KnowledgeStore until trusted evidence "
+                "provenance verification is implemented"
+            )
         confidence = _validate_choice(
             record["confidence"],
             CONFIDENCE_LEVELS,
