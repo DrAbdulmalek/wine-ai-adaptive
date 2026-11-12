@@ -72,10 +72,14 @@ docstring, README, THREAT_MODEL):
 - Any local process able to read the machine identifier can recompute
   the pseudonym — such a process could read the raw path anyway; the
   protection targets the value *leaving* the machine.
-- Different machines never produce the same pseudonym for the same
-  path: no cross-machine correlation.
+- Independently generated machine identifiers normally produce different
+  pseudonyms, but cloned images may share `machine-id` values. The 128-bit
+  truncation also has a non-zero collision probability; this is not a
+  globally unique device identifier and cannot guarantee cross-machine
+  unlinkability.
 - Guessing common paths offline is infeasible without the key
-  (HMAC, 128-bit output).
+  (HMAC, 128-bit output), assuming the machine identifier remains private
+  and was not cloned into another installation.
 
 ### D3 — Never exported
 
