@@ -111,12 +111,12 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
             evidence = evidence + [
                 Evidence("diagnose_read", EvidenceStatus.BLOCKED,
                          "Log analysis failed after the single safe read",
-                         str(log_path), {"error": str(exc)})
+                         f"log:{Path(log_path).expanduser().name}", {"error": str(exc)})
             ]
 
     if as_json:
         payload = {
-            "log": str(Path(log_path).expanduser()),
+            "log": Path(log_path).expanduser().name,
             "findings": findings,
             "log_summary": summary,
             "evidence": _evidence_to_dicts(evidence),
@@ -128,7 +128,7 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
         return 0
 
     print("===== WINE AI ADAPTIVE DIAGNOSE =====")
-    print(f"Log: {Path(log_path).expanduser()}")
+    print(f"Log: {Path(log_path).expanduser().name}")
 
     if findings:
         print("Structured error codes:")
