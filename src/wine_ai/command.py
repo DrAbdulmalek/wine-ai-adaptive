@@ -41,7 +41,7 @@ def _resolve_allowlisted_program(args: tuple[str, ...]) -> tuple[str, ...] | Non
     allowed_args = READ_ONLY_COMMANDS.get(program)
     if allowed_args is None or args[1] not in allowed_args:
         return None
-    if "/" in args[0] or "\\\\" in args[0]:
+    if "/" in args[0] or "\\" in args[0]:
         return None
 
     located = shutil.which(program)
@@ -83,7 +83,7 @@ def run_read_only(
     resolved_args = _resolve_allowlisted_program(args)
     if resolved_args is None:
         return CommandResult(
-            resolved_args,
+            args,
             None,
             "",
             "",
