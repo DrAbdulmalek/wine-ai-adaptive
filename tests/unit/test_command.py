@@ -42,13 +42,17 @@ class RunReadOnlyAllowListTests(unittest.TestCase):
             result.error, "command not in read-only allow-list"
         )
 
-    def test_program_is_matched_by_basename(self):
-        result = run_read_only(
-            ["/opt/custom/bin/wine", "--version"]
-        )
-        self.assertNotEqual(
-            result.error, "command not in read-only allow-list"
-        )
+    def test_custom_executable_path_is_rejected(self):
+        result = run_read_only(["/opt/custom/bin/wine", "--version"])
+        self.assertEqual(result.error, "command not in read-only allow-list")
+
+    def test_missing_required_argument_is_rejected(self):
+        result = run_read_only(["wine"])
+        self.assertEqual(result.error, "command not in read-only allow-list")
+
+    def test_extra_argument_is_rejected(self):
+        result = run_read_only(["wine", "--version", "--help"])
+        self.assertEqual(result.error, "command not in read-only allow-list")
 
     def test_empty_and_nul_arguments_rejected(self):
         result = run_read_only([])
