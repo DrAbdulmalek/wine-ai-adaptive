@@ -16,3 +16,7 @@ htmlcov/
 # Local diagnostic data and safety backups — never publish
 data/
 .local-safety-backups/
+
+# local validation evidence (uploaded with PRs, never committed)
+manjaro-smoke-report.txt
+evidence/
