@@ -80,8 +80,10 @@ def probe_vulkan():
             ],
         )
 
+    # run_read_only performs its own allow-listed PATH resolution. Keep
+    # argv[0] as the bare command; absolute paths are intentionally rejected.
     result = run_read_only(
-        [executable, "--summary"],
+        ["vulkaninfo", "--summary"],
         timeout=12,
     )
 
