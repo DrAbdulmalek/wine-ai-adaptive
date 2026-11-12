@@ -21,7 +21,6 @@ git clone https://github.com/DrAbdulmalek/wine-ai-adaptive.git
 cd wine-ai-adaptive
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
