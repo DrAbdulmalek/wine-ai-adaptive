@@ -57,6 +57,14 @@ class DiagnoseCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("0xC0000005", json.loads(out)["findings"][0]["code"])
 
+    def test_json_output_redacts_log_parent_directories(self):
+        self.log.write_text("no structured error", encoding="utf-8")
+        code, out = self._run(["diagnose", "--log", str(self.log), "--json"])
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["log"], "wine.log")
+        self.assertNotIn(str(self.log.parent), out)
+
     def test_no_raw_log_text_in_human_output(self):
         self.log.write_text(
             "err: exception 0xC0000005 at 0x7fff\n",
