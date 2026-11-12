@@ -58,10 +58,14 @@ Pending owner review:
 ## Root corrective actions
 
 - [x] Secret scanning in CI (`gitleaks` step in
-      `.github/workflows/ci.yml`) — added in this round; acceptance
-      check: a commit containing the canonical example key
-      `AKIAIOSFODNN7EXAMPLE` must fail the scan (verify on a scratch
-      branch, then delete the branch — see PR/round notes).
+      `.github/workflows/ci.yml`) — added in this round. Verified
+      locally with gitleaks v8.28.0 on 2026-11-13: a realistic
+      high-entropy AWS-shaped key is detected (rule `generic-api-key`,
+      exit 1); the canonical AWS-documentation example key is
+      allowlisted and is NOT detected, so the owner-side acceptance
+      commit (on a scratch branch, deleted afterwards) must use a
+      realistic-shaped dummy key. Key-shaped material is never quoted
+      in committed files.
 - [ ] Pre-commit secret-scan hook for local work (owner to adopt).
 - [ ] Policy acknowledgement: never paste keys/tokens into chat
       sessions or documents; share provider names, not values

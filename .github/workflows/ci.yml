@@ -8,6 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Secret scanning (unified plan §4.2): any commit introducing key
+  # material must fail CI. Runs once, not per Python version.
+  # Acceptance check (owner-side, on a scratch branch): a commit
+  # containing a realistic high-entropy AWS-shaped access key must fail
+  # this job; delete the scratch branch afterwards. Verified locally
+  # with gitleaks v8.28.0: the canonical AWS-documentation example key
+  # is allowlisted by the default config and does NOT trip the scanner,
+  # so the dummy commit must use a realistic high-entropy key. Never
+  # embed key-shaped material, even examples, in committed files.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks scans the pushed history
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   tests:
     runs-on: ubuntu-latest
     strategy:
