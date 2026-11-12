@@ -185,11 +185,12 @@ def prefix_hash_of(
 
     The absolute path is hashed and never stored or returned: 32
     lowercase hex characters (128 bits of HMAC-SHA256) keyed by the
-    local machine identifier allow correlation across sessions *on the
-    same machine* while making offline path-guessing infeasible for an
-    attacker who only holds the hash. Same-machine linking is by
-    design; different machines never produce the same pseudonym for
-    the same path, so no cross-machine correlation is possible.
+    local machine identifier allow correlation across sessions on
+    machines with the same machine identifier. Independently generated
+    machine identifiers normally produce different pseudonyms, but cloned
+    images may share machine-id values and 128-bit truncation has a
+    non-zero collision probability. This is pseudonymization, not a
+    guarantee of globally unique device identity.
 
     ``key`` overrides the derived local key (tests use this). Without
     any usable key the pseudonym is not produced at all (fail-closed).
