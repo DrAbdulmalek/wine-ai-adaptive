@@ -106,6 +106,24 @@ def _verify_file_identity(info: os.stat_result, *, what: str) -> None:
         raise BottleRegistryError(f"{what} permissions must be exactly 0600")
 
 
+def _verify_managed_directory(info: os.stat_result, *, component: str, private: bool) -> None:
+    """Enforce ownership and non-writable managed-path components.
+
+    XDG parent directories may be readable by other users, but must not be
+    writable by group/others. The application and prefixes directories are
+    private and must be exactly 0700.
+    """
+    if not stat.S_ISDIR(info.st_mode):
+        raise BottleRegistryError(f"Managed path component is not a directory: {component}")
+    if not hasattr(os, "geteuid") or info.st_uid != os.geteuid():
+        raise BottleRegistryError(f"Managed path component has unexpected ownership: {component}")
+    mode = stat.S_IMODE(info.st_mode)
+    if mode & 0o022:
+        raise BottleRegistryError(f"Managed path component is group/world-writable: {component}")
+    if private and mode != 0o700:
+        raise BottleRegistryError(f"Private managed directory permissions must be exactly 0700: {component}")
+
+
 def _identity_of(info: os.stat_result) -> dict[str, int]:
     return {"dev": int(info.st_dev), "ino": int(info.st_ino)}
 
@@ -159,16 +177,15 @@ class BottleRegistry:
                     before = os.stat(component, dir_fd=fd, follow_symlinks=False)
                 except FileNotFoundError:
                     raise
-                if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
-                    raise BottleRegistryError("Managed root component is not a real directory")
+                if stat.S_ISLNK(before.st_mode):
+                    raise BottleRegistryError("Managed root component is a symbolic link")
                 nxt = os.open(component, flags, dir_fd=fd)
                 try:
                     after = os.fstat(nxt)
-                    if not stat.S_ISDIR(after.st_mode) or (before.st_dev, before.st_ino) != (
-                        after.st_dev,
-                        after.st_ino,
-                    ):
+                    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
                         raise BottleRegistryError("Managed root component identity changed")
+                    private = component in {"wine-ai-adaptive", "prefixes"}
+                    _verify_managed_directory(after, component=component, private=private)
                 except Exception:
                     os.close(nxt)
                     raise
