@@ -9,10 +9,17 @@ Security contract (bottle-manager integration, Phase B):
 - every file open uses ``O_NOFOLLOW`` and is revalidated with ``fstat``
   (regular file, hard-link count 1, owner is the current user, mode
   exactly 0600) — anomalies are rejected, never silently repaired;
-- the registry file is written atomically: a unique temporary name is
-  created with ``O_CREAT|O_EXCL`` in the registry directory, fsynced,
-  then ``os.replace``d over the registry, followed by a directory
-  fsync, so no crash leaves a half-written registry behind;
+- the registry file is written atomically: the payload is first written
+  to an UNNAMED temporary inode via ``O_TMPFILE`` (hygiene improvement,
+  2026-11-13: a nameless inode cannot be preempted or swapped by path
+  during the write), linked to a unique temporary name only after it is
+  durable, revalidated against the held descriptor, and finally
+  ``os.replace``d over the registry followed by a directory fsync. On
+  filesystems that refuse ``O_TMPFILE`` (e.g. overlayfs, proven ENOTSUP
+  in a sandboxed repro) the previously reviewed hardened named-temporary
+  protocol is used unchanged and the degradation is documented in
+  ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2. This is temporary-file
+  hygiene ONLY and makes no same-UID claim;
 - cooperating processes serialize registry read-modify-write cycles
   through an advisory ``fcntl.flock`` on a dedicated lock file; the
   fixed-name temporary file race of the rejected 2026-11-11 draft is
@@ -63,6 +70,7 @@ from wine_ai.bottle_manager.create import MANAGED_ROOT_PARTS, NAME_PATTERN
 __all__ = [
     "BottleRegistry",
     "BottleRegistryError",
+    "NotSupportedError",
     "REGISTRY_NAME",
     "LOCK_NAME",
     "REGISTRY_VERSION",
@@ -87,15 +95,100 @@ _RECORD_IDENTITY_KEYS = frozenset({"dev", "ino"})
 
 _DIR_FLAGS_EXTRA = getattr(os, "O_CLOEXEC", 0)
 
+#: ``O_TMPFILE`` availability (Linux 3.11+). ``None`` on other platforms.
+_O_TMPFILE = getattr(os, "O_TMPFILE", None)
+
+#: errnos meaning "the flag exists but this filesystem cannot honour it"
+#: (proven: overlayfs refuses O_TMPFILE with ENOTSUP). Other OSErrors
+#: propagate — fail-closed, never a silent downgrade of a real failure.
+_O_TMPFILE_UNSUPPORTED_ERRNOS = frozenset(
+    {code for code in (
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "EINVAL", None),
+    ) if code is not None}
+)
+
 
 class BottleRegistryError(Exception):
     """A registry request was rejected or could not be completed safely."""
+
+
+class NotSupportedError(RuntimeError):
+    """A required security primitive is unavailable on this platform.
+
+    Raised for the missing-``O_TMPFILE`` case: the write path then
+    refuses (fail-closed) instead of falling back to a named temporary
+    file. See ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2.
+    """
 
 
 def _file_flags() -> int:
     if not hasattr(os, "O_NOFOLLOW"):
         raise BottleRegistryError("Required no-follow file flags are unavailable")
     return os.O_NOFOLLOW | _DIR_FLAGS_EXTRA
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of ``data``, handling partial writes.
+
+    ``os.write`` may transfer fewer bytes than requested; a write
+    protocol that ignores the return value silently truncates the
+    registry payload.
+    """
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(errno.EIO, "write made no progress")
+        view = view[written:]
+
+
+def _write_temp_bytes(parent_fd: int, data: bytes) -> int:
+    """Write ``data`` to an unnamed temporary inode; return its descriptor.
+
+    Linux contract with ``O_TMPFILE`` available: the inode has NO name
+    until it is explicitly linked later, so it cannot be preempted or
+    swapped by path during the write. On platforms without ``O_TMPFILE``
+    this raises :class:`NotSupportedError` — fail-closed, with NO
+    named-temporary fallback. This is a hygiene improvement only: it is
+    NOT a same-UID closure and NOT a compare-and-swap (the publication
+    window after linking is unchanged; see
+    ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2).
+    """
+    if _O_TMPFILE is None:
+        raise NotSupportedError(
+            "O_TMPFILE unavailable; refusing named-temp fallback "
+            "(see docs/SECURITY_REMEDIATION_STATUS.md)"
+        )
+    fd = os.open(".", _O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=parent_fd)
+    try:
+        # Mode is deterministic regardless of the process umask.
+        os.fchmod(fd, 0o600)
+        _write_all(fd, data)
+        os.fsync(fd)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _link_unnamed_fd(fd: int, dir_fd: int, name: str) -> None:
+    """Attach an unnamed ``O_TMPFILE`` inode to ``name`` under ``dir_fd``.
+
+    Uses the unprivileged ``/proc/self/fd`` + ``AT_SYMLINK_FOLLOW``
+    linkat route. The directory entry exists only from this call to the
+    subsequent rename, shrinking the named-temporary window from "the
+    whole write" to "just before publication". This is hygiene, not a
+    same-UID boundary (no portable CAS exists).
+    """
+    os.link(
+        f"/proc/self/fd/{int(fd)}",
+        name,
+        src_dir_fd=None,
+        dst_dir_fd=dir_fd,
+        follow_symlinks=True,
+    )
 
 
 def _verify_file_identity(info: os.stat_result, *, what: str) -> None:
@@ -320,20 +413,30 @@ class BottleRegistry:
             raise BottleRegistryError("Registry file changed during the operation; write refused")
         payload = (json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8")
         tmp_name = f"{REGISTRY_NAME}.{uuid.uuid4().hex}.tmp"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _file_flags()
         fd = None
         try:
-            fd = os.open(tmp_name, flags, 0o600, dir_fd=root_fd)
-            os.fchmod(fd, 0o600)
-            info = os.fstat(fd)
-            _verify_file_identity(info, what="Temporary registry file")
-            view = memoryview(payload)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError(errno.EIO, "registry write made no progress")
-                view = view[written:]
-            os.fsync(fd)
+            unnamed_fd: int | None
+            try:
+                unnamed_fd = _write_temp_bytes(root_fd, payload)
+            except NotSupportedError:
+                raise
+            except OSError as exc:
+                if exc.errno not in _O_TMPFILE_UNSUPPORTED_ERRNOS:
+                    raise
+                unnamed_fd = None
+            if unnamed_fd is not None:
+                fd = unnamed_fd
+                # The name exists only from here to the replace below.
+                _link_unnamed_fd(fd, root_fd, tmp_name)
+            else:
+                # Hardened named-temporary protocol (the reviewed
+                # pre-O_TMPFILE baseline), used only where the filesystem
+                # refuses O_TMPFILE. The same identity checks below apply.
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _file_flags()
+                fd = os.open(tmp_name, flags, 0o600, dir_fd=root_fd)
+                os.fchmod(fd, 0o600)
+                _write_all(fd, payload)
+                os.fsync(fd)
 
             # Revalidate that the temporary name still refers to the inode
             # held open by fd. The random name reduces discoverability but
@@ -368,6 +471,21 @@ class BottleRegistry:
             os.close(fd)
             fd = None
             os.fsync(root_fd)
+        except NotSupportedError as exc:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(tmp_name, dir_fd=root_fd)
+            except OSError:
+                pass
+            raise BottleRegistryError(
+                "Registry write refused: O_TMPFILE unavailable on this platform "
+                "and a named-temporary fallback is forbidden (fail-closed); "
+                "see docs/SECURITY_REMEDIATION_STATUS.md"
+            ) from exc
         except OSError as exc:
             if fd is not None:
                 try:
