@@ -480,7 +480,15 @@ def discover_prefixes(
                 return
 
             for name, expected_dev, expected_ino, entry_mode in sorted(entries_to_scan):
-                if stat.S_ISLNK(entry_mode) or not stat.S_ISDIR(entry_mode):
+                if stat.S_ISLNK(entry_mode):
+                    evidence.append(Evidence(
+                        "prefix_candidate", EvidenceStatus.BLOCKED,
+                        "Symlinked prefix candidate rejected without traversal",
+                        f"bottle_manager.discovery:{origin}",
+                        {"path": str(root / name)},
+                    ))
+                    continue
+                if not stat.S_ISDIR(entry_mode):
                     continue
                 candidate_fd = None
                 try:
