@@ -293,7 +293,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         self.assertTrue(any(item["path"] == str(good) for item in prefixes))
         self.assertTrue(any(
             item.status.value == "BLOCKED"
-            and "identity could not be verified" in item.summary
+            and "could not be opened relative" in item.summary
             for item in evidence
         ))
 
@@ -495,14 +495,14 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         managed.mkdir(parents=True)
         broken = make_prefix(managed, "a-broken")
         good = make_prefix(managed, "z-good")
-        real_open_dir = discovery._open_dir_path
+        real_open = os.open
         real_fstat = os.fstat
         candidate_fds_to_fail = set()
         failed_fd_numbers = []
 
-        def track_candidate_descriptor(path):
-            fd = real_open_dir(path)
-            if Path(path) == broken:
+        def track_candidate_descriptor(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if path == "a-broken" and kwargs.get("dir_fd") is not None:
                 candidate_fds_to_fail.add(fd)
             return fd
 
@@ -516,7 +516,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             return real_fstat(fd)
 
         with mock.patch.object(
-            discovery, "_open_dir_path", side_effect=track_candidate_descriptor
+            discovery.os, "open", side_effect=track_candidate_descriptor
         ):
             with mock.patch.object(
                 discovery.os, "fstat", side_effect=fail_candidate_fstat
