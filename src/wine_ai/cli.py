@@ -82,21 +82,6 @@ def status_command(as_json: bool) -> int:
     return 0
 
 
-def _read_log_text(path: str) -> str:
-    """Read a local log with the same caps as ``inspect_log``.
-
-    Regular files only, hard size cap of ``MAX_LOG_SIZE``, decoded
-    with ``errors="replace"``. Raises ``ValueError`` for anything that
-    does not look like a safely readable log file.
-    """
-    log_path = Path(path).expanduser()
-    if not log_path.is_file():
-        raise ValueError(f"not a regular file: {log_path}")
-    if log_path.stat().st_size > MAX_LOG_SIZE:
-        raise ValueError(f"log exceeds {MAX_LOG_SIZE} bytes")
-    return log_path.read_text(encoding="utf-8", errors="replace")
-
-
 def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -> int:
     """Triage a local Wine/Proton log: parse, classify, print.
 
