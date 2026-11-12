@@ -105,6 +105,27 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(self.store.list_records(), [])
 
 
+    def test_atomic_rejection_leaves_no_partial_insert(self):
+        # Documented property (security/proven-write-barrier): the batch is
+        # validated in full BEFORE the write transaction opens, so a PROVEN
+        # record anywhere in a batch must reject the whole batch with zero
+        # rows inserted — including rows that individually looked valid.
+        seed = self.store.add_record(**self.valid_record())
+        self.assertTrue(seed)
+
+        good = self.valid_record()
+        good["wine_version"] = "11.20"
+        bad = self.valid_record()
+        bad["evidence_status"] = "PROVEN"
+
+        before = len(self.store.list_records())
+        with self.assertRaisesRegex(ValueError, "trusted evidence provenance"):
+            self.store.add_records_atomic([good, bad])
+        after = len(self.store.list_records())
+
+        self.assertEqual(before, after, "PROVEN rejection must not leave a partial insert")
+        self.assertEqual(after, 1)  # only the seed row exists
+
 
 if __name__ == "__main__":
     unittest.main()
