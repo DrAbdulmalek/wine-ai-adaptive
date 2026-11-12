@@ -274,12 +274,13 @@ class RegistrySecurityTests(unittest.TestCase):
             with self.assertRaises(BottleRegistryError):
                 self.registry.read()
 
-    def test_lock_symlink_rejected(self):
+    def test_lock_symlink_rejected_by_writer(self):
+        self.add_bottle_dir("alpha")
         target = self.home / "outside.lock"
         target.write_text("", encoding="utf-8")
         os.symlink(target, self.root / LOCK_NAME)
         with self.assertRaises(BottleRegistryError):
-            self.registry.read()
+            self.registry.register(make_record("alpha", self.root))
 
     # -- identity revalidation -----------------------------------------------------
 
