@@ -77,9 +77,12 @@ docstring, README, THREAT_MODEL):
   truncation also has a non-zero collision probability; this is not a
   globally unique device identifier and cannot guarantee cross-machine
   unlinkability.
-- Guessing common paths offline is infeasible without the key
-  (HMAC, 128-bit output), assuming the machine identifier remains private
-  and was not cloned into another installation.
+- An external recipient who has the hash but does not know the machine-id
+  cannot directly recompute candidate paths. The machine-id is readable to
+  local processes and is not a cryptographic secret; if it is disclosed with
+  the hash, offline guessing becomes possible. This is pseudonymization
+  dependent on keeping the machine-id out of exported data, not a secret-key
+  guarantee.
 
 ### D3 — Never exported
 
