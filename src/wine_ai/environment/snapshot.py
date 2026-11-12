@@ -24,9 +24,10 @@ Runtime contract
 ----------------
 "Read-only" describes effects on the Wine prefix and the diagnostic
 subject: nothing is modified. It does NOT mean "no external programs":
-``detect_wine_version`` (and therefore ``collect``) may run ``wine
---version`` once with a short timeout when no ``WINE_VERSION``-style
-environment hint is present. Pass ``allow_exec=False`` to forbid
+``detect_wine_version`` (and therefore ``collect``) may request the
+allow-listed ``wine --version`` query when no ``WINE_VERSION``-style
+environment hint is present. The central command gate validates the
+resolved executable and exact argument. Pass ``allow_exec=False`` to forbid
 subprocess execution entirely (environment hints only).
 """
 
@@ -36,11 +37,11 @@ import hashlib
 import hmac
 import os
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional
+
+from wine_ai.command import run_read_only
 
 WINE_VERSION_RE = re.compile(r"wine[- ](\d+\.\d+(?:\.\d+)?)")
 
@@ -243,17 +244,8 @@ def detect_wine_version(
     if not allow_exec:
         return None
 
-    executable = shutil.which("wine")
-    if not executable:
-        return None
-    try:
-        result = subprocess.run(
-            [executable, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
+    result = run_read_only(["wine", "--version"], timeout=5)
+    if result.returncode != 0:
         return None
     return parse_wine_version(result.stdout)
 
