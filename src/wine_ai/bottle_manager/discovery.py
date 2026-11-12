@@ -517,7 +517,7 @@ def discover_prefixes(
                     f"bottle_manager.discovery:{origin}",
                     {
                         "path": str(root),
-                        "scanned": len(names),
+                        "scanned": len(entries_to_scan),
                         "limit": MAX_SCAN_SUBDIRS,
                         "additional_entries_not_enumerated": True,
                     },
