@@ -293,7 +293,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         self.assertTrue(any(item["path"] == str(good) for item in prefixes))
         self.assertTrue(any(
             item.status.value == "BLOCKED"
-            and "could not be opened relative" in item.summary
+            and "identity could not be verified" in item.summary
             for item in evidence
         ))
 
