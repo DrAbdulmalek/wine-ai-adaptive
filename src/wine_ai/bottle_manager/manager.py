@@ -10,9 +10,7 @@ Deliberately absent (each a separately approved future feature, never a
 silent gap): initialization with ``wineboot``, ``winetricks`` recipe
 execution, running executables, arbitrary commands, and deletion. No
 method here spawns a process, and no method removes filesystem entries.
-If registration fails after the directory was created, the operation
-returns a ``BLOCKED`` evidence and reports the directory as an orphan —
-state is never silently inconsistent.
+No public write operation is currently enabled.
 """
 
 from __future__ import annotations
