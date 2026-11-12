@@ -305,30 +305,36 @@ class RegistrySecurityTests(unittest.TestCase):
         # the real registry survived untouched
         self.assertEqual(os.lstat(self.root / REGISTRY_NAME).st_ino, reg_ino)
 
-    def test_atomic_write_rejects_temporary_entry_swap_after_fsync(self):
+    def test_atomic_write_rejects_temporary_entry_swap_before_replace(self):
         self.add_bottle_dir("alpha")
         self.add_bottle_dir("beta")
         self.registry.register(make_record("alpha", self.root))
-        real_fsync = os.fsync
+        real_stat = os.stat
+        real_open = os.open
+        real_write = os.write
         swapped = {"done": False}
 
-        def swap_temp_after_sync(fd):
-            if not swapped["done"]:
+        def swap_temp_before_stat(path, *args, **kwargs):
+            if (
+                isinstance(path, str) and path.endswith(".tmp")
+                and kwargs.get("dir_fd") is not None and not swapped["done"]
+            ):
                 swapped["done"] = True
-                temp_names = [
-                    name for name in os.listdir(self.root)
-                    if name.startswith(REGISTRY_NAME + ".") and name.endswith(".tmp")
-                ]
-                self.assertEqual(len(temp_names), 1)
-                temp_name = temp_names[0]
-                os.unlink(self.root / temp_name)
-                replacement = self.root / temp_name
-                replacement.write_text("replacement", encoding="utf-8")
-                os.chmod(replacement, 0o600)
-            return real_fsync(fd)
+                dir_fd = kwargs["dir_fd"]
+                os.unlink(path, dir_fd=dir_fd)
+                replacement_fd = real_open(
+                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                    dir_fd=dir_fd,
+                )
+                try:
+                    real_write(replacement_fd, b"replacement")
+                    os.fchmod(replacement_fd, 0o600)
+                finally:
+                    os.close(replacement_fd)
+            return real_stat(path, *args, **kwargs)
 
-        with mock.patch("wine_ai.bottle_manager.registry.os.fsync",
-                        side_effect=swap_temp_after_sync):
+        with mock.patch("wine_ai.bottle_manager.registry.os.stat",
+                        side_effect=swap_temp_before_stat):
             with self.assertRaises(BottleRegistryError):
                 self.registry.register(make_record("beta", self.root, operation_id="op-2"))
         self.assertTrue(swapped["done"])
