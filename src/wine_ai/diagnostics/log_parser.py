@@ -26,76 +26,62 @@ PATTERNS = {
 }
 
 
-def inspect_log(path: str):
-
+def inspect_log_with_content(path: str):
+    """Read once through a no-follow descriptor and return parsed metadata and text."""
     log_path = Path(path).expanduser()
-
+    fd = None
     try:
-        if not log_path.is_file():
-            raise FileNotFoundError("Not a regular file")
-
-        size = log_path.stat().st_size
-
-        if size > MAX_LOG_SIZE:
-            raise ValueError(
-                f"Log exceeds {MAX_LOG_SIZE} bytes"
-            )
-
-        content = log_path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        )
-
+        if not hasattr(os, "O_NOFOLLOW"):
+            raise OSError("O_NOFOLLOW is unavailable")
+        flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(log_path, flags)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("Not a regular file")
+        if before.st_size > MAX_LOG_SIZE:
+            raise ValueError(f"Log exceeds {MAX_LOG_SIZE} bytes")
+        chunks = []
+        remaining = MAX_LOG_SIZE + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > MAX_LOG_SIZE:
+            raise ValueError(f"Log exceeds {MAX_LOG_SIZE} bytes")
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise OSError("Log identity changed while open")
+        content = raw.decode("utf-8", errors="replace")
+        size = len(raw)
     except (OSError, ValueError) as exc:
-
         return (
-            {
-                "path": str(log_path),
-                "read_error": str(exc),
-            },
-            [
-                Evidence(
-                    "log_read",
-                    EvidenceStatus.BLOCKED,
-                    "Log could not be safely read",
-                    str(log_path),
-                    {"error": str(exc)},
-                )
-            ],
+            {"path": str(log_path), "read_error": str(exc)},
+            [Evidence("log_read", EvidenceStatus.BLOCKED,
+                      "Log could not be safely read", str(log_path),
+                      {"error": str(exc)})],
+            None,
         )
+    finally:
+        if fd is not None:
+            os.close(fd)
 
-    matches = {
-        name: len(pattern.findall(content))
-        for name, pattern in PATTERNS.items()
-    }
+    matches = {name: len(pattern.findall(content)) for name, pattern in PATTERNS.items()}
+    found = {name: count for name, count in matches.items() if count > 0}
+    status = EvidenceStatus.PARTIALLY_PROVEN if found else EvidenceStatus.UNPROVEN
+    data = {"path": str(log_path), "size_bytes": size, "matches": matches,
+            "classification": list(found)}
+    evidence = [Evidence(
+        "log_patterns", status,
+        "Pattern matches are heuristic indicators, not root-cause proof",
+        str(log_path), {"matches": matches},
+    )]
+    return data, evidence, content
 
-    found = {
-        name: count
-        for name, count in matches.items()
-        if count > 0
-    }
 
-    status = (
-        EvidenceStatus.PARTIALLY_PROVEN
-        if found
-        else EvidenceStatus.UNPROVEN
-    )
-
-    data = {
-        "path": str(log_path),
-        "size_bytes": size,
-        "matches": matches,
-        "classification": list(found),
-    }
-
-    evidence = [
-        Evidence(
-            "log_patterns",
-            status,
-            "Pattern matches are heuristic indicators, not root-cause proof",
-            str(log_path),
-            {"matches": matches},
-        )
-    ]
-
+def inspect_log(path: str):
+    """Compatibility wrapper: inspect a log without returning its raw text."""
+    data, evidence, _content = inspect_log_with_content(path)
     return data, evidence
