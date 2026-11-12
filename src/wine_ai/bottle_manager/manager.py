@@ -39,67 +39,14 @@ class BottleManager:
     def __init__(self) -> None:
         self._registry = BottleRegistry()
 
-    # -- helpers -------------------------------------------------------------
-
     @property
     def root_path(self) -> str:
         """Human-readable managed root path (reporting only; never opened by path)."""
         return str(Path.home().joinpath(*MANAGED_ROOT_PARTS))
 
-    @staticmethod
-    def _registry_entry(record: dict[str, Any], identity: dict[str, int]) -> dict[str, Any]:
-        # create.py's record does not carry a relative path; it is derived
-        # from the managed root contract (last managed component + name).
-        return {
-            "name": record["name"],
-            "relative_path": f"{MANAGED_ROOT_PARTS[-1]}/{record['name']}",
-            "state": record["state"],
-            "created_at": record["created_at"],
-            "operation_id": record["operation_id"],
-            "identity": dict(identity),
-        }
-
-    def _capture_identity(self, name: str) -> dict[str, int]:
-        """Pin the created directory's identity through the registry's verified root."""
-        return self._registry.pin_identity(name)
-
-    # -- write capability (create only) -----------------------------------------
-
     def create_bottle(self, name: str) -> tuple[dict[str, Any] | None, list[Evidence]]:
         """Fail closed: Create Bottle is disabled pending a safe OS design."""
-        record, evidences = _create_empty_bottle(name)
-        if record is None:
-            return None, evidences
-        try:
-            identity = self._capture_identity(record["name"])
-        except (OSError, BottleRegistryError) as exc:
-            evidences = evidences + [
-                Evidence(
-                    "bottle_register",
-                    EvidenceStatus.BLOCKED,
-                    f"Created directory could not be pinned to the registry; "
-                    f"it is left unregistered and must be reconciled manually ({exc})",
-                    "bottle_manager.manager",
-                    {"operation_id": record.get("operation_id"), "name": record.get("name")},
-                )
-            ]
-            return None, evidences
-        entry = self._registry_entry(record, identity)
-        try:
-            self._registry.register(entry)
-        except BottleRegistryError as exc:
-            evidences = evidences + [
-                Evidence(
-                    "bottle_register",
-                    EvidenceStatus.BLOCKED,
-                    f"Registry registration failed; the created directory is left "
-                    f"unregistered and must be reconciled manually ({exc})",
-                    "bottle_manager.manager",
-                    {"operation_id": record.get("operation_id"), "name": record.get("name")},
-                )
-            ]
-            return None, evidences
-        return entry, evidences
+        return _create_empty_bottle(name)
 
     # -- read-only capabilities ---------------------------------------------------
 
