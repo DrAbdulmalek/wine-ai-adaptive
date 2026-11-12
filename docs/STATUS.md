@@ -14,7 +14,7 @@
 
 | PR | العنوان | الحالة | الأساس | CI |
 |---|---|---|---|---|
-| #17 | fix(security): harden discovery, registry, command and log paths | Draft / مفتوح | main مدمج داخل الفرع (`494f68f` merge commit بلا force؛ الأساس كان متأخرًا 15 التزامًا — انظر أدناه) | أخضر تاريخيًا على ext4؛ سلسلة 2026-11-13 تجعل الحزمة خضراء أيضًا على overlayfs/umask-002/077 (422 اختبارًا OK محليًا) |
+| #17 | fix(security): harden discovery, registry, command and log paths | Draft / مفتوح | main مدمج داخل الفرع (`494f68f` merge commit بلا force؛ الأساس كان متأخرًا 15 التزامًا — انظر أدناه) | أخضر تاريخيًا على ext4؛ سلسلة 2026-11-13 خضراء على overlayfs/umask-002/077 (434 اختبارًا OK محليًا بعد جولة تصحيحات المُراجع — عقد O_TMPFILE fail-closed بلا مسار مؤقت مسمّى) |
 
 **حالة الأساس (مثبتة 2026-11-13):** merge-base لرأس #17 مع main كان `f49372f`، وmain = `ad7ae12` (دمجا #15 و#16). الأساس كان متأخرًا 15 التزامًا، كلها توثيقية وبلا تقاطع مع تغييرات الفرع، فدُمج main داخل الفرع بـmerge commit (`494f68f`) — المسار الموافق لسياسة لا-force-push. ملاحظة الوكيل: الدفع الفعلي يتطلب `GH_TOKEN` وهو غير متاح في بيئة الجلسة؛ التسليم عبر سلسلة رقع + bundle جاهزين للدفع السريع العادي.
 
@@ -27,7 +27,7 @@
 | recommend | عقد مبدئي فقط | `python -m wine_ai.recommendation` يعيد `NO_PROVEN_EVIDENCE` (الخطة §2.3)؛ المحرك مؤجل حتى مرساة ثقة موثقة — انظر `docs/design/recommendation-trust-anchor.md` (سؤال المالك معلق) |
 | create bottle | BLOCKED عمدًا | reason=CREATION_DISABLED_PENDING_SECURITY_REVIEW + doc_url في `docs/SECURITY_REMEDIATION_STATUS.md#النقطة-1`؛ `wine-ai create` يطبع الرسالة التعاقدية |
 | Trados / memoQ | UNPROVEN | مصفوفة قابلة للتعبئة: `docs/cat/compatibility-matrix.json` + سياسة الأدلة `docs/CAT_COMPATIBILITY.md`؛ سكربت التحقق `scripts/check_cat_matrix.py` في CI |
-| نظافة الملفات المؤقتة | منفذة (تحسين فقط) | `O_TMPFILE` أولًا، والتدهور الموثق إلى المسار المسمّى المدقق حيث يرفض نظام الملفات العلم (مثبت overlayfs ENOTSUP) — ليس إغلاق same-UID ولا CAS |
+| نظافة الملفات المؤقتة | منفذة (تحسين فقط) | `O_TMPFILE` + ربط `linkat` فقط؛ غياب العلم أو رفض نظام الملفات (مثبت overlayfs ENOTSUP) أو رفض الربط ⟶ `NotSupportedError` والكتابة ترفض — **لا يوجد مسار مؤقت مسمّى إطلاقًا** (عقد §1.2 المصحح 2026-11-13) — ليس إغلاق same-UID ولا CAS |
 
 ## الموانع الأمنية المتبقية
 
@@ -37,7 +37,8 @@
 - PROVEN: حاجز كتابة مفعّل + سياسة الاستيراد الافتراضية (تنزيل يحفظ الادعاء في تقرير الاستيراد) و`strict=True` يرفض؛ verifier غير موجود.
 - Manjaro: **NOT RUN** — بوابة إصدار؛ السكربت `scripts/test-manjaro.sh` (fail-loud، يفي معايير الخطة §5.3 للسكربت الصارم: أي فشل → رمز خروج غير صفري ولا يُطبع OK) هو أداة التنفيذ عند توفر VM نظيفة.
 - حادث الأسرار INC-2026-11-12-01: **مفتوح** حتى يؤكد المالك الإلغاء والتدوير (`docs/security/INC-2026-11-12-secret-leak.md`).
-- فحص الأسرار في CI: مفعّل (`secrets` job / gitleaks) — تاريخ المستودع نظيف (فحص محلي v8.28.0: صفر نتائج).
+- فحص الأسرار في CI: مفعّل (`secrets` job / gitleaks مثبّت على commit الوسم v2: `ff98106e4c7b2bc287b24eaf42907196329070c7`) — تاريخ المستودع نظيف (فحص محلي v8.28.0: صفر نتائج).
+- invariants الوثائق الخمسة (لا ادعاء تمكين create / لا إغلاق same-UID / لا CAS / لا PROVEN لأدوات CAT بلا مصفوفة / لا Manjaro مُتحقق بلا دليل) مفعّلة كاختبارات (`tests/unit/test_docs_claims.py`).
 
 ## قرارات معلقة
 
