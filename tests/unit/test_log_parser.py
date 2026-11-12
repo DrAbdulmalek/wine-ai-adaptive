@@ -1,9 +1,10 @@
+import os
 import tempfile
 import unittest
 
 from pathlib import Path
 
-from wine_ai.diagnostics.log_parser import inspect_log
+from wine_ai.diagnostics.log_parser import inspect_log, inspect_log_with_content
 
 
 class LogParserTests(unittest.TestCase):
@@ -29,6 +30,26 @@ class LogParserTests(unittest.TestCase):
                 evidence[0].status.value,
                 "PARTIALLY_PROVEN",
             )
+
+    def test_rejects_symlink_without_reading_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.log"
+            link = Path(tmp) / "link.log"
+            target.write_text("err:module:import_dll")
+            link.symlink_to(target)
+            data, evidence = inspect_log(str(link))
+            self.assertIn("read_error", data)
+            self.assertEqual(evidence[0].status.value, "BLOCKED")
+
+    def test_descriptor_reader_returns_same_content_used_for_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wine.log"
+            content = "err:module:import_dll Library missing.dll not found"
+            path.write_text(content, encoding="utf-8")
+            data, evidence, returned = inspect_log_with_content(str(path))
+            self.assertEqual(returned, content)
+            self.assertEqual(data["size_bytes"], len(content.encode("utf-8")))
+            self.assertEqual(data["matches"]["missing_module"], 1)
 
     def test_rejects_oversized_log(self):
 
