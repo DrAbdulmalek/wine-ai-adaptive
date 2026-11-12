@@ -35,7 +35,6 @@ git clone https://github.com/DrAbdulmalek/wine-ai-adaptive.git
 cd wine-ai-adaptive
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
@@ -60,7 +59,7 @@ wine-ai prefixes --json
 
 ## 5. عزل التجارب
 
-استخدم بيئة اختبار مستقلة لكل تطبيق، ولا تخلط ملفات Trados مع memoQ. لا تستخدم `~/.wine` ولا بادئة عمل حقيقية. لا تنشئ أو تهيئ Prefix قبل مراجعة تعليمات الإصدار المحدد وخطة الاستعادة. واجهة Bottle Manager الحالية تنشئ مجلدًا فارغًا غير مهيأ فقط؛ هذا **ليس** Wine Prefix صالحًا ولا يعادل تشغيل `wineboot`.
+استخدم بيئة اختبار مستقلة لكل تطبيق، ولا تخلط ملفات Trados مع memoQ. لا تستخدم `~/.wine` ولا بادئة عمل حقيقية. لا تنشئ أو تهيئ Prefix قبل مراجعة تعليمات الإصدار المحدد وخطة الاستعادة. إنشاء Bottle عبر Bottle Manager **معطّل حاليًا** ويعيد `BLOCKED` دون أي كتابة على نظام الملفات؛ لا تعتمد على هذه الوظيفة ولا تعتبرها وسيلة لإنشاء Prefix. هذا الحظر أمني مؤقت إلى حين اعتماد تصميم أقوى ومراجعته.
 
 ## 6. عند حدوث عطل
 
