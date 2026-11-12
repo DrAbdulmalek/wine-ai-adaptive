@@ -38,7 +38,6 @@ class QueryLayerTests(unittest.TestCase):
             ),
             valid_record(
                 error_category="missing_module",
-                error_code="STATUS_DLL_NOT_FOUND",
             ),
         ])
         # Simulate a legacy row written before the public API provenance gate.
