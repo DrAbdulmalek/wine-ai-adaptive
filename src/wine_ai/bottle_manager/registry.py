@@ -17,9 +17,10 @@ Security contract (bottle-manager integration, Phase B):
   through an advisory ``fcntl.flock`` on a dedicated lock file; the
   fixed-name temporary file race of the rejected 2026-11-11 draft is
   eliminated by a unique per-write temporary name;
-- the file identity observed at the start of a write cycle is
-  revalidated immediately before the atomic replace; a swap in between
-  fails the operation instead of silently overwriting the replacement;
+- the file identity observed at the start of a write cycle is checked
+  again after the temporary file is durable and immediately before replace;
+  this narrows (but cannot eliminate) a same-uid namespace race because
+  POSIX rename has no compare-and-swap-by-inode primitive;
 - directory entries are addressed exclusively through directory file
   descriptors with ``follow_symlinks=False``; names never traverse the
   filesystem by themselves;
@@ -286,9 +287,9 @@ class BottleRegistry:
         fd = None
         try:
             fd = os.open(tmp_name, flags, 0o600, dir_fd=root_fd)
+            os.fchmod(fd, 0o600)
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise BottleRegistryError("Temporary registry file is not a singly-linked regular file")
+            _verify_file_identity(info, what="Temporary registry file")
             view = memoryview(payload)
             while view:
                 written = os.write(fd, view)
@@ -298,6 +299,27 @@ class BottleRegistry:
             os.fsync(fd)
             os.close(fd)
             fd = None
+
+            # Revalidate the target entry after the temporary file is fully
+            # written and synced. This closes the earlier, avoidable gap; it
+            # is not an atomic compare-and-swap against hostile same-uid writers.
+            try:
+                current = os.stat(REGISTRY_NAME, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                current = None
+            except OSError as exc:
+                raise BottleRegistryError(
+                    f"Could not revalidate registry immediately before replace ({exc.errno})"
+                ) from exc
+            if current is not None and (
+                stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode)
+            ):
+                raise BottleRegistryError("Registry target changed to an unsafe object")
+            actual = None if current is None else (current.st_dev, current.st_ino)
+            if actual != expected:
+                raise BottleRegistryError(
+                    "Registry identity changed immediately before replace; write refused"
+                )
             os.replace(tmp_name, REGISTRY_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
             os.fsync(root_fd)
         except OSError as exc:
