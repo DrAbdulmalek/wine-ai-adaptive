@@ -442,6 +442,38 @@ def _normalize_record(
 def import_package(
     store: KnowledgeStore,
     package: Any,
+    *,
+    strict: bool = False,
+    source_id: str = "package",
+) -> list[int] | dict[str, Any]:
+    """Import ``package`` into ``store`` under the documented PROVEN policy.
+
+    Decision (unified plan §2.2, 2026-11-13; SECURITY_REMEDIATION_STATUS.md
+    §2 "Historical round-trip policy"):
+
+    - ``strict=False`` (default): a package carrying PROVEN is accepted,
+      with every PROVEN record downgraded to UNPROVEN and the ORIGINAL
+      claim preserved in the returned import report
+      (``import_original_claim`` / ``import_source`` / ``import_warning``
+      plus ``index`` / ``inserted_id``). The caller must persist that
+      report as the import log so no provenance semantics are silently
+      lost. Returns the report dict.
+    - ``strict=True``: all-or-nothing rejection of any PROVEN record with
+      ``PortabilityError``; nothing is inserted. Returns the list of
+      inserted ids (historical behavior, kept for auditors).
+
+    Both paths validate the complete package before any insert.
+    """
+    if not isinstance(strict, bool):
+        raise PortabilityError("strict must be bool")
+    if strict:
+        return _import_package_strict(store, package)
+    return import_package_lenient(store, package, source_id=source_id)
+
+
+def _import_package_strict(
+    store: KnowledgeStore,
+    package: Any,
 ) -> list[int]:
     """Validate ``package`` and insert its records into ``store``.
 
@@ -487,6 +519,106 @@ def import_package(
 def import_package_file(
     store: KnowledgeStore,
     path: str | Path,
-) -> list[int]:
-    """Convenience: read from disk then import."""
-    return import_package(store, read_package(path))
+    *,
+    strict: bool = False,
+) -> list[int] | dict[str, Any]:
+    """Convenience: read from disk then import (``source_id`` = the path)."""
+    return import_package(store, read_package(path), strict=strict, source_id=str(path))
+
+
+def import_package_lenient(
+    store: KnowledgeStore,
+    package: Any,
+    *,
+    source_id: str = "package",
+) -> dict[str, Any]:
+    """Import with the documented downgrade policy for PROVEN records.
+
+    Policy decision (unified plan §2.2, 2026-11-13,
+    SECURITY_REMEDIATION_STATUS.md §2):
+
+    - This is the DEFAULT import policy: a package carrying PROVEN is
+      accepted, but no PROVEN row is ever inserted (the store write
+      barrier forbids that). Historical PROVEN claims inside an incoming
+      package are downgraded to UNPROVEN and the ORIGINAL claim is
+      preserved in the returned report, tied to the stored row via its
+      index and inserted id, plus the plan's explicit annotation fields.
+      The caller must persist this report as the import log so no
+      provenance semantics are silently lost.
+    - ``import_package(..., strict=True)`` is the strict variant that
+      rejects any PROVEN record all-or-nothing.
+    - Records without PROVEN are unaffected.
+
+    The returned report::
+
+        {
+            "inserted_ids": [...],
+            "record_count": <int>,
+            "downgraded": [
+                {
+                    "index": <int, position in package["records"]>,
+                    "inserted_id": <int, row id in the target store>,
+                    "original_evidence_status": "PROVEN",
+                    "final_evidence_status": "UNPROVEN",
+                    "import_original_claim": "PROVEN",
+                    "import_source": "<source_id>:<index>",
+                    "import_warning": "downgraded_from_PROVEN",
+                    "reason": "proven_write_barrier_import_policy",
+                },
+                ...
+            ],
+        }
+    """
+    package = _validate_header(package)
+    includes_prefix_id = package["includes_prefix_id"]
+    records_in = package["records"]
+
+    prepared: list[dict[str, Any]] = []
+    downgraded: list[dict[str, Any]] = []
+    for index, raw in enumerate(records_in):
+        record = _normalize_record(
+            raw,
+            includes_prefix_id=includes_prefix_id,
+            index=index,
+        )
+        if record.get("evidence_status") == "PROVEN":
+            # Preserve the original claim in the report, then downgrade:
+            # the store write barrier forbids new PROVEN rows, but the
+            # incoming semantics must not vanish silently.
+            record = dict(record)
+            record["evidence_status"] = "UNPROVEN"
+            downgraded.append({
+                "index": index,
+                "original_evidence_status": "PROVEN",
+                "final_evidence_status": "UNPROVEN",
+                "import_original_claim": "PROVEN",
+                "import_source": f"{source_id}:{index}",
+                "import_warning": "downgraded_from_PROVEN",
+                "reason": "proven_write_barrier_import_policy",
+            })
+        try:
+            store._prepare_record(record)  # noqa: SLF001
+        except ValueError as exc:
+            raise PortabilityError(
+                f"records[{index}] rejected by store: {exc}"
+            ) from exc
+        prepared.append(record)
+
+    if not prepared:
+        return {"inserted_ids": [], "record_count": 0, "downgraded": downgraded}
+
+    inserted_ids: list[int] = []
+    for offset in range(0, len(prepared), MAX_BATCH_SIZE):
+        chunk = prepared[offset : offset + MAX_BATCH_SIZE]
+        inserted_ids.extend(store.add_records_atomic(chunk))
+
+    # Link each preserved claim to the row id it became.
+    for entry in downgraded:
+        position = entry["index"]
+        entry["inserted_id"] = inserted_ids[position] if position < len(inserted_ids) else None
+
+    return {
+        "inserted_ids": inserted_ids,
+        "record_count": len(prepared),
+        "downgraded": downgraded,
+    }

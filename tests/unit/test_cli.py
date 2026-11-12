@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -49,6 +49,21 @@ class DiagnoseCommandTests(unittest.TestCase):
         )
         # No raw log lines in the JSON payload
         self.assertNotIn("import_dll Library foo.dll not found", out)
+
+    def test_diagnose_does_not_reopen_log_after_inspection(self):
+        self.log.write_text("err: exception 0xC0000005 at 0x7fff\n", encoding="utf-8")
+        with mock.patch.object(Path, "read_text", side_effect=AssertionError("second read forbidden")):
+            code, out = self._run(["diagnose", "--log", str(self.log), "--json"])
+        self.assertEqual(code, 0)
+        self.assertIn("0xC0000005", json.loads(out)["findings"][0]["code"])
+
+    def test_json_output_redacts_log_parent_directories(self):
+        self.log.write_text("no structured error", encoding="utf-8")
+        code, out = self._run(["diagnose", "--log", str(self.log), "--json"])
+        payload = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["log"], "wine.log")
+        self.assertNotIn(str(self.log.parent), out)
 
     def test_no_raw_log_text_in_human_output(self):
         self.log.write_text(
@@ -191,3 +206,39 @@ class PrefixesCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreateCommandBlockedTests(unittest.TestCase):
+    """Unified plan §1.4: `wine-ai create` always refuses, honestly."""
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_create_prints_blocked_message_to_stderr_and_exits_nonzero(self):
+        from wine_ai.cli import BLOCKED_CREATE_MESSAGE
+        code, out, err = self._run(["create", "myapp"])
+        self.assertEqual(code, 2)
+        self.assertEqual(err, BLOCKED_CREATE_MESSAGE + "\n")
+        self.assertIn(
+            "docs/SECURITY_REMEDIATION_STATUS.md", err,
+            "the blocked message must point at the remediation contract",
+        )
+        self.assertIn("not a CAS", err)
+        self.assertEqual(out, "")
+
+    def test_create_json_output_carries_reason_and_doc_url(self):
+        code, out, _ = self._run(["create", "myapp", "--json"])
+        self.assertEqual(code, 2)
+        payload = json.loads(out)
+        self.assertEqual(payload["status"], "BLOCKED")
+        self.assertEqual(payload["reason"],
+                         "CREATION_DISABLED_PENDING_SECURITY_REVIEW")
+        self.assertIn("SECURITY_REMEDIATION_STATUS", payload["doc_url"])
+
+    def test_create_without_name_is_also_blocked(self):
+        code, _, err = self._run(["create"])
+        self.assertEqual(code, 2)
+        self.assertIn("intentionally BLOCKED", err)

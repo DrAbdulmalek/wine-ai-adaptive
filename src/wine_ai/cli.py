@@ -36,7 +36,7 @@ from wine_ai.diagnostics.cat_tools import (
     signature_hints,
 )
 from wine_ai.diagnostics.codes import extract_error_codes
-from wine_ai.diagnostics.log_parser import MAX_LOG_SIZE, inspect_log
+from wine_ai.diagnostics.log_parser import inspect_log_with_content
 from wine_ai.environment.inventory import collect_environment
 from wine_ai.evidence import Evidence, EvidenceStatus
 from wine_ai.gpu_compatibility.probe import probe_vulkan
@@ -82,21 +82,6 @@ def status_command(as_json: bool) -> int:
     return 0
 
 
-def _read_log_text(path: str) -> str:
-    """Read a local log with the same caps as ``inspect_log``.
-
-    Regular files only, hard size cap of ``MAX_LOG_SIZE``, decoded
-    with ``errors="replace"``. Raises ``ValueError`` for anything that
-    does not look like a safely readable log file.
-    """
-    log_path = Path(path).expanduser()
-    if not log_path.is_file():
-        raise ValueError(f"not a regular file: {log_path}")
-    if log_path.stat().st_size > MAX_LOG_SIZE:
-        raise ValueError(f"log exceeds {MAX_LOG_SIZE} bytes")
-    return log_path.read_text(encoding="utf-8", errors="replace")
-
-
 def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -> int:
     """Triage a local Wine/Proton log: parse, classify, print.
 
@@ -110,14 +95,13 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
     manually; this tool never executes them (docs/AGENT_POLICY.md,
     no auto-repair).
     """
-    summary, evidence = inspect_log(log_path)
+    summary, evidence, text = inspect_log_with_content(log_path)
 
     findings = []
     profile_hints = []
     profile_analyzed = False
-    if "read_error" not in summary:
+    if "read_error" not in summary and text is not None:
         try:
-            text = _read_log_text(log_path)
             findings = extract_error_codes(text)
             if profile is not None:
                 findings = refine_findings(findings, profile)
@@ -126,13 +110,13 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
         except (OSError, ValueError) as exc:
             evidence = evidence + [
                 Evidence("diagnose_read", EvidenceStatus.BLOCKED,
-                         "Log could not be re-read safely",
-                         str(log_path), {"error": str(exc)})
+                         "Log analysis failed after the single safe read",
+                         f"log:{Path(log_path).expanduser().name}", {"error": str(exc)})
             ]
 
     if as_json:
         payload = {
-            "log": str(Path(log_path).expanduser()),
+            "log": Path(log_path).expanduser().name,
             "findings": findings,
             "log_summary": summary,
             "evidence": _evidence_to_dicts(evidence),
@@ -144,7 +128,7 @@ def diagnose_command(log_path: str, as_json: bool, profile: str | None = None) -
         return 0
 
     print("===== WINE AI ADAPTIVE DIAGNOSE =====")
-    print(f"Log: {Path(log_path).expanduser()}")
+    print(f"Log: {Path(log_path).expanduser().name}")
 
     if findings:
         print("Structured error codes:")
@@ -238,6 +222,33 @@ def prefixes_command(as_json: bool) -> int:
     return 0
 
 
+# Intentional feature-gate message (unified plan §1.4, 2026-11-13).
+# Wording is contractual: the doc reference MUST appear in the output.
+BLOCKED_CREATE_MESSAGE = (
+    "ERROR: Bottle creation is intentionally BLOCKED.\n"
+    "Reason: creation path security review is incomplete (same-UID race is open;\n"
+    "        registry publication is not a CAS).\n"
+    "This is expected behavior. See: docs/SECURITY_REMEDIATION_STATUS.md"
+)
+
+
+def create_command(as_json: bool = False) -> int:
+    """Always refuse: bottle creation is blocked pending security review.
+
+    Performs zero filesystem work; exists so users get the honest
+    blocked message instead of an argparse 'invalid choice' error.
+    """
+    if as_json:
+        print(json.dumps({
+            "status": "BLOCKED",
+            "reason": "CREATION_DISABLED_PENDING_SECURITY_REVIEW",
+            "doc_url": "docs/SECURITY_REMEDIATION_STATUS.md#النقطة-1",
+        }, ensure_ascii=False))
+        return 2
+    print(BLOCKED_CREATE_MESSAGE, file=sys.stderr)
+    return 2
+
+
 def _add_json_flag(parser, *, suppressed=False):
     parser.add_argument(
         "--json",
@@ -292,6 +303,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     _add_json_flag(prefixes_parser, suppressed=True)
 
+    create_parser = subparsers.add_parser(
+        "create",
+        help="Intentionally BLOCKED — bottle creation is disabled pending "
+             "a security review (see docs/SECURITY_REMEDIATION_STATUS.md).",
+    )
+    create_parser.add_argument(
+        "name",
+        nargs="?",
+        default="",
+        help="Requested bottle name (accepted for compatibility; nothing "
+             "is created).",
+    )
+    _add_json_flag(create_parser, suppressed=True)
+
     args = parser.parse_args(argv)
 
     command = args.command or "status"
@@ -308,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "prefixes":
         return prefixes_command(as_json=bool(args.json))
+
+    if command == "create":
+        return create_command(as_json=bool(args.json))
 
     parser.print_help()
     return 1

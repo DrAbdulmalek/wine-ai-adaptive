@@ -209,7 +209,7 @@ class SchemaMigrationTests(unittest.TestCase):
             wine_version="11.19",
             distro="Manjaro",
             error_category="memory",
-            evidence_status="PROVEN",
+            evidence_status="PARTIALLY_PROVEN",
             confidence="high",
             error_code="0xC0000005",
         )
@@ -237,7 +237,7 @@ class SchemaMigrationTests(unittest.TestCase):
             wine_version="11.19",
             distro="Manjaro",
             error_category="memory",
-            evidence_status="PROVEN",
+            evidence_status="PARTIALLY_PROVEN",
             confidence="high",
         )
         self.assertEqual(next_id, 4)
@@ -265,7 +265,7 @@ class SchemaMigrationTests(unittest.TestCase):
             wine_version="11.19",
             distro="Manjaro",
             error_category="memory",
-            evidence_status="PROVEN",
+            evidence_status="PARTIALLY_PROVEN",
             confidence="high",
         )
         self.assertEqual(next_id, 4)

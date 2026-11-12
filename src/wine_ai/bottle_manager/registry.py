@@ -9,20 +9,32 @@ Security contract (bottle-manager integration, Phase B):
 - every file open uses ``O_NOFOLLOW`` and is revalidated with ``fstat``
   (regular file, hard-link count 1, owner is the current user, mode
   exactly 0600) — anomalies are rejected, never silently repaired;
-- the registry file is written atomically: a unique temporary name is
-  created with ``O_CREAT|O_EXCL`` in the registry directory, fsynced,
-  then ``os.replace``d over the registry, followed by a directory
-  fsync, so no crash leaves a half-written registry behind;
+- the registry file is written atomically: the payload is first written
+  to an UNNAMED temporary inode via ``O_TMPFILE`` (hygiene improvement,
+  2026-11-13: a nameless inode cannot be preempted or swapped by path
+  during the write), linked to a unique temporary name only after it is
+  durable, revalidated against the held descriptor, and finally
+  ``os.replace``d over the registry followed by a directory fsync.
+  Fail-closed contract (§1.2, reviewer-corrected 2026-11-13): a missing
+  ``O_TMPFILE`` flag, a filesystem that refuses it (ENOTSUP/EINVAL/ENOSYS
+  family, e.g. overlayfs — proven in a sandboxed repro), or a failed
+  ``linkat`` materialization raises ``NotSupportedError`` and the write
+  refuses. There is NO named-temporary fallback anywhere. This is
+  temporary-file hygiene ONLY and makes no same-UID claim;
 - cooperating processes serialize registry read-modify-write cycles
   through an advisory ``fcntl.flock`` on a dedicated lock file; the
   fixed-name temporary file race of the rejected 2026-11-11 draft is
   eliminated by a unique per-write temporary name;
-- the file identity observed at the start of a write cycle is
-  revalidated immediately before the atomic replace; a swap in between
-  fails the operation instead of silently overwriting the replacement;
+- the file identity observed at the start of a write cycle is checked
+  again after the temporary file is durable and immediately before replace;
+  this narrows (but cannot eliminate) a same-uid namespace race because
+  POSIX rename has no compare-and-swap-by-inode primitive;
 - directory entries are addressed exclusively through directory file
   descriptors with ``follow_symlinks=False``; names never traverse the
   filesystem by themselves;
+- managed XDG path components are checked for current-user ownership and
+  group/other non-writability; the application and prefixes directories
+  must be exactly ``0700`` before registry access;
 - failures are fail-closed: the registry raises instead of guessing,
   and never deletes, repairs, or re-creates anything.
 
@@ -30,8 +42,11 @@ Documented residual (honest limit, same class as SEC-01): identity
 revalidation compares ``(dev, ino)``; a same-filesystem swap that
 recycles the exact inode (observed when ``rmdir`` is immediately
 followed by ``mkdir`` on ext4/tmpfs) is indistinguishable from the
-original entry. Hostile same-uid processes remain out of scope; the
-mode/symlink checks narrow the practical window further.
+original entry. The advisory lock serializes only cooperating writers. A hostile process
+running under the same UID can still mutate directory entries and race the
+final check-to-rename interval; the current implementation does not claim
+protection against that actor. The mode and symlink checks reduce exposure
+but are not a same-UID isolation boundary.
 
 Deliberately out of scope (owner disposition, 2026-11-11 independent
 review of the rejected ``feature/bottle-manager`` draft): bottle
@@ -56,6 +71,7 @@ from wine_ai.bottle_manager.create import MANAGED_ROOT_PARTS, NAME_PATTERN
 __all__ = [
     "BottleRegistry",
     "BottleRegistryError",
+    "NotSupportedError",
     "REGISTRY_NAME",
     "LOCK_NAME",
     "REGISTRY_VERSION",
@@ -80,15 +96,142 @@ _RECORD_IDENTITY_KEYS = frozenset({"dev", "ino"})
 
 _DIR_FLAGS_EXTRA = getattr(os, "O_CLOEXEC", 0)
 
+#: ``O_TMPFILE`` availability (Linux 3.11+). ``None`` on other platforms.
+_O_TMPFILE = getattr(os, "O_TMPFILE", None)
+
+#: errnos meaning "the flag exists but this platform/filesystem cannot
+#: honour it" (proven: overlayfs refuses O_TMPFILE with ENOTSUP). These
+#: map to NotSupportedError — the write refuses, fail-closed, with NO
+#: named-temporary fallback. Other OSErrors propagate unchanged: a real
+#: failure is never silently downgraded.
+_O_TMPFILE_UNSUPPORTED_ERRNOS = frozenset(
+    {code for code in (
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "EINVAL", None),
+        getattr(errno, "ENOSYS", None),
+    ) if code is not None}
+)
+
+#: errnos meaning "linkat materialization is not honoured here"
+#: (reviewer contract §1.2; EXDEV included defensively). Same rule:
+#: refuse, never fall back.
+_LINK_UNSUPPORTED_ERRNOS = frozenset(
+    {code for code in (
+        getattr(errno, "EINVAL", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "ENOSYS", None),
+        getattr(errno, "EXDEV", None),
+    ) if code is not None}
+)
+
 
 class BottleRegistryError(Exception):
     """A registry request was rejected or could not be completed safely."""
+
+
+class NotSupportedError(RuntimeError):
+    """A required security primitive is unavailable on this platform.
+
+    Raised when ``O_TMPFILE`` is missing from the platform OR the
+    filesystem refuses it (ENOTSUP/EINVAL/ENOSYS family) OR the
+    ``linkat`` materialization is refused: the write path then refuses
+    (fail-closed) instead of falling back to a named temporary file.
+    See ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2.
+    """
 
 
 def _file_flags() -> int:
     if not hasattr(os, "O_NOFOLLOW"):
         raise BottleRegistryError("Required no-follow file flags are unavailable")
     return os.O_NOFOLLOW | _DIR_FLAGS_EXTRA
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of ``data``, handling partial writes.
+
+    ``os.write`` may transfer fewer bytes than requested; a write
+    protocol that ignores the return value silently truncates the
+    registry payload.
+    """
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(errno.EIO, "write made no progress")
+        view = view[written:]
+
+
+def _write_temp_bytes(parent_fd: int, data: bytes) -> int:
+    """Write ``data`` to an unnamed temporary inode; return its descriptor.
+
+    Linux contract with ``O_TMPFILE`` available: the inode has NO name
+    until it is explicitly linked later, so it cannot be preempted or
+    swapped by path during the write. Where ``O_TMPFILE`` is missing
+    from the platform OR the filesystem refuses it (ENOTSUP/EINVAL/ENOSYS
+    family — proven: overlayfs → ENOTSUP), this raises
+    :class:`NotSupportedError` — fail-closed, with NO named-temporary
+    fallback. This is a hygiene improvement only: it is NOT a same-UID
+    closure and NOT a compare-and-swap (the publication window after
+    linking is unchanged; see
+    ``docs/SECURITY_REMEDIATION_STATUS.md`` §1.2).
+    """
+    if _O_TMPFILE is None:
+        raise NotSupportedError(
+            "O_TMPFILE unavailable; refusing named-temp fallback "
+            "(see docs/SECURITY_REMEDIATION_STATUS.md)"
+        )
+    try:
+        fd = os.open(".", _O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=parent_fd)
+    except OSError as exc:
+        if exc.errno in _O_TMPFILE_UNSUPPORTED_ERRNOS:
+            raise NotSupportedError(
+                "O_TMPFILE unsupported on this filesystem/kernel; "
+                "refusing named-temp fallback "
+                "(see docs/SECURITY_REMEDIATION_STATUS.md)"
+            ) from exc
+        raise
+    try:
+        # Mode is deterministic regardless of the process umask.
+        os.fchmod(fd, 0o600)
+        _write_all(fd, data)
+        os.fsync(fd)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _link_unnamed_fd(fd: int, dir_fd: int, name: str) -> None:
+    """Attach an unnamed ``O_TMPFILE`` inode to ``name`` under ``dir_fd``.
+
+    Uses the unprivileged ``/proc/self/fd`` + ``AT_SYMLINK_FOLLOW``
+    linkat route. The directory entry exists only from this call to the
+    subsequent rename, shrinking the named-temporary window from "the
+    whole write" to "just before publication". This is hygiene, not a
+    same-UID boundary (no portable CAS exists).
+
+    Fail-closed: a refused materialization (EINVAL/EOPNOTSUPP/ENOTSUP/
+    ENOSYS/EXDEV family) raises :class:`NotSupportedError` — there is
+    NO named-temporary fallback (§1.2).
+    """
+    try:
+        os.link(
+            f"/proc/self/fd/{int(fd)}",
+            name,
+            src_dir_fd=None,
+            dst_dir_fd=dir_fd,
+            follow_symlinks=True,
+        )
+    except OSError as exc:
+        if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
+            raise NotSupportedError(
+                "O_TMPFILE materialization unsupported on this "
+                "filesystem/kernel; refusing named-temp fallback "
+                "(see docs/SECURITY_REMEDIATION_STATUS.md)"
+            ) from exc
+        raise
 
 
 def _verify_file_identity(info: os.stat_result, *, what: str) -> None:
@@ -100,6 +243,38 @@ def _verify_file_identity(info: os.stat_result, *, what: str) -> None:
         raise BottleRegistryError(f"{what} must be a singly-linked file")
     if stat.S_IMODE(info.st_mode) != 0o600:
         raise BottleRegistryError(f"{what} permissions must be exactly 0600")
+
+
+def _verify_managed_directory(info: os.stat_result, *, component: str, private: bool) -> None:
+    """Enforce ownership and writability policy on managed-path components.
+
+    Application-owned components (``private=True``) must be owned by the
+    current user and exactly 0700. XDG parent directories (``.local``,
+    ``.local/share``) are user-owned, not application-owned: they must
+    never be world-writable, and a group-writable bit is accepted only
+    when the owning group is the user's own primary group. That pattern
+    (0775 on ``~/.local``) is the normal result of user-private-group
+    setups — Debian/Ubuntu desktops with umask 002 — and the group is
+    the user alone, so treating it as an untrusted boundary would make
+    the registry refuse to open on those systems. A group-writable
+    component owned by any other group is rejected.
+    """
+    if not stat.S_ISDIR(info.st_mode):
+        raise BottleRegistryError(f"Managed path component is not a directory: {component}")
+    if not hasattr(os, "geteuid") or info.st_uid != os.geteuid():
+        raise BottleRegistryError(f"Managed path component has unexpected ownership: {component}")
+    mode = stat.S_IMODE(info.st_mode)
+    if mode & 0o002:
+        raise BottleRegistryError(f"Managed path component is world-writable: {component}")
+    if (mode & 0o020) and not private:
+        own_primary_group = hasattr(os, "getegid") and info.st_gid == os.getegid()
+        if not own_primary_group:
+            raise BottleRegistryError(
+                "Managed path component is group-writable by a group other than "
+                f"the user's primary group: {component}"
+            )
+    if private and mode != 0o700:
+        raise BottleRegistryError(f"Private managed directory permissions must be exactly 0700: {component}")
 
 
 def _identity_of(info: os.stat_result) -> dict[str, int]:
@@ -155,16 +330,15 @@ class BottleRegistry:
                     before = os.stat(component, dir_fd=fd, follow_symlinks=False)
                 except FileNotFoundError:
                     raise
-                if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
-                    raise BottleRegistryError("Managed root component is not a real directory")
+                if stat.S_ISLNK(before.st_mode):
+                    raise BottleRegistryError("Managed root component is a symbolic link")
                 nxt = os.open(component, flags, dir_fd=fd)
                 try:
                     after = os.fstat(nxt)
-                    if not stat.S_ISDIR(after.st_mode) or (before.st_dev, before.st_ino) != (
-                        after.st_dev,
-                        after.st_ino,
-                    ):
+                    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
                         raise BottleRegistryError("Managed root component identity changed")
+                    private = component in {"wine-ai-adaptive", "prefixes"}
+                    _verify_managed_directory(after, component=component, private=private)
                 except Exception:
                     os.close(nxt)
                     raise
@@ -189,10 +363,10 @@ class BottleRegistry:
         except OSError as exc:
             raise BottleRegistryError(f"Could not open registry lock ({exc.errno})") from exc
         try:
-            info = os.fstat(fd)
-            _verify_file_identity(info, what="Registry lock")
             if created:
                 os.fchmod(fd, 0o600)
+            info = os.fstat(fd)
+            _verify_file_identity(info, what="Registry lock")
             return fd
         except Exception:
             os.close(fd)
@@ -282,24 +456,66 @@ class BottleRegistry:
             raise BottleRegistryError("Registry file changed during the operation; write refused")
         payload = (json.dumps(data, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode("utf-8")
         tmp_name = f"{REGISTRY_NAME}.{uuid.uuid4().hex}.tmp"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _file_flags()
         fd = None
         try:
-            fd = os.open(tmp_name, flags, 0o600, dir_fd=root_fd)
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise BottleRegistryError("Temporary registry file is not a singly-linked regular file")
-            view = memoryview(payload)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError(errno.EIO, "registry write made no progress")
-                view = view[written:]
-            os.fsync(fd)
+            # Fail-closed: the payload is written to an UNNAMED inode only.
+            # A missing/refused O_TMPFILE or a refused linkat raises
+            # NotSupportedError; the write refuses and no named-temporary
+            # fallback exists anywhere (§1.2, reviewer contract).
+            fd = _write_temp_bytes(root_fd, payload)
+            # The name exists only from here (materialization) to the
+            # replace below.
+            _link_unnamed_fd(fd, root_fd, tmp_name)
+
+            # Revalidate that the temporary name still refers to the inode
+            # held open by fd. The random name reduces discoverability but
+            # is not a substitute for checking the directory entry.
+            tmp_opened = os.fstat(fd)
+            tmp_entry = os.stat(tmp_name, dir_fd=root_fd, follow_symlinks=False)
+            _verify_file_identity(tmp_entry, what="Temporary registry entry")
+            if (tmp_entry.st_dev, tmp_entry.st_ino) != (
+                tmp_opened.st_dev, tmp_opened.st_ino
+            ):
+                raise BottleRegistryError("Temporary registry entry changed before replace")
+
+            # Revalidate the target entry after the temporary file is fully
+            # written and synced. This closes the earlier, avoidable gap; it
+            # is not an atomic compare-and-swap against hostile same-uid writers.
+            try:
+                current = os.stat(REGISTRY_NAME, dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                current = None
+            except OSError as exc:
+                raise BottleRegistryError(
+                    f"Could not revalidate registry immediately before replace ({exc.errno})"
+                ) from exc
+            if current is not None:
+                _verify_file_identity(current, what="Registry target")
+            actual = None if current is None else (current.st_dev, current.st_ino)
+            if actual != expected:
+                raise BottleRegistryError(
+                    "Registry identity changed immediately before replace; write refused"
+                )
+            os.replace(tmp_name, REGISTRY_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
             os.close(fd)
             fd = None
-            os.replace(tmp_name, REGISTRY_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
             os.fsync(root_fd)
+        except NotSupportedError as exc:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            try:
+                os.unlink(tmp_name, dir_fd=root_fd)
+            except OSError:
+                pass
+            raise BottleRegistryError(
+                "Registry write refused: O_TMPFILE or linkat materialization "
+                "unavailable/refused on this platform/filesystem and a "
+                "named-temporary fallback is forbidden (fail-closed); "
+                "see docs/SECURITY_REMEDIATION_STATUS.md §1.2"
+            ) from exc
         except OSError as exc:
             if fd is not None:
                 try:
@@ -326,34 +542,35 @@ class BottleRegistry:
     # -- read-modify-write cycles ---------------------------------------------
 
     def read(self) -> dict[str, dict[str, Any]]:
-        """Return a validated copy of the registry (empty when uninitialized)."""
-        root_fd = lock_fd = reg_fd = None
+        """Read a stable registry inode without creating locks or other files.
+
+        Writers publish complete snapshots with os.replace(). Opening the
+        registry once pins either the old or new inode, so a reader can parse
+        a consistent snapshot without taking the advisory writer lock. This
+        keeps list/get/verify/orphans genuinely read-only.
+        """
+        root_fd = reg_fd = None
         try:
             try:
                 root_fd = self._open_root()
             except FileNotFoundError:
                 return {}
-            lock_fd = self._open_lock(root_fd)
-            fcntl.flock(lock_fd, fcntl.LOCK_SH)
+            reg_fd, _ = self._open_registry(root_fd)
+            if reg_fd is None:
+                return {}
+            raw = bytearray()
+            while True:
+                chunk = os.read(reg_fd, 65536)
+                if not chunk:
+                    break
+                raw.extend(chunk)
             try:
-                reg_fd, _ = self._open_registry(root_fd)
-                if reg_fd is None:
-                    return {}
-                raw = b""
-                while True:
-                    chunk = os.read(reg_fd, 65536)
-                    if not chunk:
-                        break
-                    raw += chunk
-                try:
-                    data = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, ValueError) as exc:
-                    raise BottleRegistryError("Registry file is corrupted") from exc
-                return dict(self._validate_document(data)["bottles"])
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                data = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise BottleRegistryError("Registry file is corrupted") from exc
+            return dict(self._validate_document(data)["bottles"])
         finally:
-            for fd in (reg_fd, lock_fd, root_fd):
+            for fd in (reg_fd, root_fd):
                 if fd is not None:
                     os.close(fd)
 

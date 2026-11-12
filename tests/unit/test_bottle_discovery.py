@@ -96,6 +96,32 @@ class DiscoverPrefixesTests(unittest.TestCase):
             f"expected missing-marker evidence, got: {summaries}",
         )
 
+    def test_container_candidate_swap_after_enumeration_is_rejected(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        original = make_prefix(managed, "raced")
+        real_open = os.open
+        swapped = {"done": False}
+
+        def swap_before_candidate_open(path, flags, *args, **kwargs):
+            if path == "raced" and kwargs.get("dir_fd") is not None and not swapped["done"]:
+                swapped["done"] = True
+                os.rename(original, managed / "displaced")
+                replacement = make_prefix(managed, "raced", arch="win32")
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch("wine_ai.bottle_manager.discovery.os.open",
+                        side_effect=swap_before_candidate_open):
+            prefixes, evidence = discover_prefixes(home=self.home)
+
+        self.assertTrue(swapped["done"])
+        self.assertNotIn("raced", {item["name"] for item in prefixes})
+        self.assertTrue(any(
+            item.status.value == "BLOCKED"
+            and "changed identity" in item.summary.lower()
+            for item in evidence
+        ))
+
     def test_symlinked_prefix_candidate_is_rejected(self):
         managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
         managed.mkdir(parents=True)

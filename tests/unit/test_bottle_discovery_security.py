@@ -495,14 +495,14 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         managed.mkdir(parents=True)
         broken = make_prefix(managed, "a-broken")
         good = make_prefix(managed, "z-good")
-        real_open_dir = discovery._open_dir_path
+        real_open = os.open
         real_fstat = os.fstat
         candidate_fds_to_fail = set()
         failed_fd_numbers = []
 
-        def track_candidate_descriptor(path):
-            fd = real_open_dir(path)
-            if Path(path) == broken:
+        def track_candidate_descriptor(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if path == "a-broken" and kwargs.get("dir_fd") is not None:
                 candidate_fds_to_fail.add(fd)
             return fd
 
@@ -516,7 +516,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             return real_fstat(fd)
 
         with mock.patch.object(
-            discovery, "_open_dir_path", side_effect=track_candidate_descriptor
+            discovery.os, "open", side_effect=track_candidate_descriptor
         ):
             with mock.patch.object(
                 discovery.os, "fstat", side_effect=fail_candidate_fstat
@@ -532,7 +532,7 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             self.assertEqual(raised.exception.errno, errno.EBADF)
         self.assertTrue(any(
             item.status.value == "BLOCKED"
-            and "identity could not be verified" in item.summary
+            and "could not be opened relative" in item.summary
             for item in evidence
         ))
 
@@ -641,6 +641,62 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
         self.assertTrue(any(
             item.status.value == "BLOCKED"
             and "Symlinked prefix candidate" in item.summary
+            for item in evidence
+        ))
+
+    def test_layered_filesystem_dirent_inode_mismatch_does_not_block(self):
+        # overlayfs (containers, some CI runners) and some network
+        # filesystems report readdir d_ino values that differ
+        # structurally from statx for every entry. That is a filesystem
+        # property, not a replacement attack, so discovery must not
+        # block candidates because of it. Identity binding stays with
+        # the stat-snapshot/fstat comparison after the dir_fd-relative
+        # open (same stat family), which the swap tests cover.
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        good = make_prefix(managed, "layered-fs")
+        real_scandir = os.scandir
+
+        class OverlayStyleEntry:
+            def __init__(self, entry):
+                self._entry = entry
+
+            def inode(self):
+                # Structurally different from statx, as on overlayfs:
+                # large, positive, and never equal to stat's st_ino.
+                return self._entry.inode() + 1_000_000
+
+            def __getattr__(self, item):
+                return getattr(self._entry, item)
+
+        class _OverlayScandirResult:
+            def __init__(self, real):
+                self._real = real
+
+            def __enter__(self):
+                self._real.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._real.__exit__(*exc)
+
+            def __iter__(self):
+                for entry in self._real:
+                    yield OverlayStyleEntry(entry)
+
+        def overlay_scandir(target):
+            return _OverlayScandirResult(real_scandir(target))
+
+        with mock.patch(
+            "wine_ai.bottle_manager.discovery.os.scandir",
+            side_effect=overlay_scandir,
+        ):
+            prefixes, evidence = discover_prefixes(home=self.home)
+
+        self.assertIn("layered-fs", {item["name"] for item in prefixes})
+        self.assertTrue(any(item["path"] == str(good) for item in prefixes))
+        self.assertFalse(any(
+            "changed identity during enumeration" in item.summary
             for item in evidence
         ))
 

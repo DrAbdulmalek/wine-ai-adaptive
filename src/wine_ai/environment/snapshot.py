@@ -11,21 +11,24 @@ display name (its base name), the only value safe enough to persist as
 ``prefix_id``. The absolute path can additionally be reduced to
 ``prefix_hash``: a truncated *HMAC-SHA256* pseudonym keyed by a local
 machine identifier. This enables correlation across sessions on the
-same machine while making offline path-guessing infeasible for anyone
-who only holds the hash. Stated limits: it is NOT anonymity; same-
+same machine. The hash alone does not reveal the path, but resistance to
+offline guessing depends on not disclosing the machine identifier with
+it. Stated limits: it is NOT anonymity; same-
 machine linking is by design; any local process able to read the
-machine identifier can recompute it; different machines never produce
-the same pseudonym for the same path; and the value never leaves the
-machine (the export allow-list never includes it). When no machine
+machine identifier can recompute it; independently generated machine
+identifiers normally produce different pseudonyms, but cloned images may
+share an identifier and truncated hashes have a non-zero collision
+probability; and the value is excluded from the export allow-list. When no machine
 identifier is readable, no pseudonym is produced at all (fail-closed).
 
 Runtime contract
 ----------------
 "Read-only" describes effects on the Wine prefix and the diagnostic
 subject: nothing is modified. It does NOT mean "no external programs":
-``detect_wine_version`` (and therefore ``collect``) may run ``wine
---version`` once with a short timeout when no ``WINE_VERSION``-style
-environment hint is present. Pass ``allow_exec=False`` to forbid
+``detect_wine_version`` (and therefore ``collect``) may request the
+allow-listed ``wine --version`` query when no ``WINE_VERSION``-style
+environment hint is present. The central command gate validates the
+resolved executable and exact argument. Pass ``allow_exec=False`` to forbid
 subprocess execution entirely (environment hints only).
 """
 
@@ -35,11 +38,11 @@ import hashlib
 import hmac
 import os
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional
+
+from wine_ai.command import run_read_only
 
 WINE_VERSION_RE = re.compile(r"wine[- ](\d+\.\d+(?:\.\d+)?)")
 
@@ -185,11 +188,14 @@ def prefix_hash_of(
 
     The absolute path is hashed and never stored or returned: 32
     lowercase hex characters (128 bits of HMAC-SHA256) keyed by the
-    local machine identifier allow correlation across sessions *on the
-    same machine* while making offline path-guessing infeasible for an
-    attacker who only holds the hash. Same-machine linking is by
-    design; different machines never produce the same pseudonym for
-    the same path, so no cross-machine correlation is possible.
+    local machine identifier allow correlation across sessions on
+    machines with the same machine identifier. Independently generated
+    machine identifiers normally produce different pseudonyms, but cloned
+    images may share machine-id values and 128-bit truncation has a
+    non-zero collision probability. The machine-id is readable by local
+    processes, so it is not a secret against a local attacker; external
+    path-guessing resistance depends on not exporting the machine-id with
+    the hash. This is pseudonymization, not globally unique device identity.
 
     ``key`` overrides the derived local key (tests use this). Without
     any usable key the pseudonym is not produced at all (fail-closed).
@@ -239,17 +245,8 @@ def detect_wine_version(
     if not allow_exec:
         return None
 
-    executable = shutil.which("wine")
-    if not executable:
-        return None
-    try:
-        result = subprocess.run(
-            [executable, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
+    result = run_read_only(["wine", "--version"], timeout=5)
+    if result.returncode != 0:
         return None
     return parse_wine_version(result.stdout)
 

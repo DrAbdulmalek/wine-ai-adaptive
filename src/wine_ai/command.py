@@ -2,18 +2,24 @@
 
 ``run_read_only`` is NOT a generic sandbox. It enforces a strict
 allow-list: only known read-only diagnostic programs with known
-read-only arguments may run, always with ``shell=False``, a timeout and
-capped output capture. Any other program or argument fails closed with
-an error result instead of executing.
+read-only arguments may run, always with ``shell=False`` and a timeout.
+Returned output is truncated before it leaves this module; note that
+``subprocess.run(capture_output=True)`` still buffers the child output in
+memory, so this is not a hard memory-usage limit. Any other program or
+argument fails closed with an error result instead of executing.
 """
 
+import os
+import shutil
+import stat
 import subprocess
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Sequence
 
 
-# Allow-list of diagnostic programs (matched by basename of argv[0],
-# case-insensitively) and the exact arguments they may receive.
+# Allow-list of diagnostic programs. Callers must use the bare command name;
+# the resolved executable and every parent directory are checked before use.
 READ_ONLY_COMMANDS: dict[str, frozenset[str]] = {
     "wine": frozenset({"--version"}),
     "wine64": frozenset({"--version"}),
@@ -30,12 +36,41 @@ class CommandResult:
     error: str | None = None
 
 
-def _is_allowlisted(args: tuple[str, ...]) -> bool:
-    program = args[0].rsplit("/", 1)[-1].lower()
+def _resolve_allowlisted_program(args: tuple[str, ...]) -> tuple[str, ...] | None:
+    if len(args) != 2:
+        return None
+    program = args[0].lower()
     allowed_args = READ_ONLY_COMMANDS.get(program)
-    if allowed_args is None:
-        return False
-    return all(arg in allowed_args for arg in args[1:])
+    if allowed_args is None or args[1] not in allowed_args:
+        return None
+    if "/" in args[0] or "\\" in args[0]:
+        return None
+
+    located = shutil.which(program)
+    if located is None:
+        return None
+    executable = Path(os.path.realpath(located))
+    try:
+        info = executable.stat()
+        if not stat.S_ISREG(info.st_mode) or not os.access(executable, os.X_OK):
+            return None
+        # Diagnostics must not execute a user-writable replacement. Only
+        # root-owned binaries in root-owned, non-writable path components
+        # are accepted; user-local Wine builds require a separate trust design.
+        trusted_owners = {0}
+        if info.st_uid not in trusted_owners or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return None
+        for parent in executable.parents:
+            parent_info = parent.stat()
+            if not stat.S_ISDIR(parent_info.st_mode):
+                return None
+            if parent_info.st_uid not in trusted_owners:
+                return None
+            if parent_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                return None
+    except OSError:
+        return None
+    return (str(executable), args[1])
 
 
 def run_read_only(
@@ -50,7 +85,8 @@ def run_read_only(
             args, None, "", "", "invalid arguments"
         )
 
-    if not _is_allowlisted(args):
+    resolved_args = _resolve_allowlisted_program(args)
+    if resolved_args is None:
         return CommandResult(
             args,
             None,
@@ -61,7 +97,7 @@ def run_read_only(
 
     try:
         result = subprocess.run(
-            args,
+            resolved_args,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -70,7 +106,7 @@ def run_read_only(
         )
 
         return CommandResult(
-            args,
+            resolved_args,
             result.returncode,
             result.stdout[:200_000],
             result.stderr[:20_000],
