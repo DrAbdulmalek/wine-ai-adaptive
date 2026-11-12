@@ -52,6 +52,7 @@ class BottleManagerReadOnlyTests(unittest.TestCase):
         self.prepare_root()
         self.assertEqual(self.manager.list_bottles(), {})
         self.assertEqual(self.manager.orphans()["unregistered_on_disk"], {})
+        self.assertFalse((self.root() / "registry.lock").exists())
         with self.assertRaises(Exception):
             self.manager.get_bottle("missing")
 
