@@ -18,7 +18,7 @@ The open security-hardening change in PR #17 intentionally disables Bottle creat
 | Rewriting or downgrading `v1.0.0` | **Not permitted** | The published release/tag is historical. Do not reuse, move, or silently redefine it. |
 | Current unreleased hardening branch | **Draft / review required** | PR #17 contains security changes and the Create Bottle feature gate. |
 | Create Bottle in PR #17 | **BLOCKED / disabled** | Both public creation entry points return `BLOCKED` without filesystem writes. Do not re-enable until a reviewed OS-level identity-binding design and tests exist. |
-| Registry writes | **Restricted / same-UID race remains** | Parent-directory operations are pinned with `dir_fd`; temporary-name and target identity checks narrow the race. `flock` coordinates cooperating writers only. The final check-to-rename interval is not atomic against a hostile same-UID process; registry writes are not claimed safe against that actor. |
+| Registry writes | **Restricted / same-UID race remains** | Managed XDG path components must be owned by the current user and not group/other-writable; the app and prefixes directories must be `0700`. Parent operations are pinned with `dir_fd`; temp/target identity checks narrow the race. `flock` coordinates cooperating writers only. The final check-to-rename interval is not atomic against a hostile same-UID process. |
 | Registry reads and orphan reporting | **Read-only** | Reads pin one registry inode; reads do not create the writer lock. Orphan reporting does not delete or repair anything. |
 | Trados Studio / memoQ runtime compatibility | **UNPROVEN** | Recipe/profile presence and successful wheel construction are not runtime compatibility evidence. No claim of successful installation, activation, licensing, or stable execution is made. |
 | Manjaro operational readiness | **NOT VERIFIED** | CI and wheel builds do not substitute for an installation and controlled runtime test on the target Manjaro environment. |
@@ -27,7 +27,7 @@ The open security-hardening change in PR #17 intentionally disables Bottle creat
 
 ### Registry atomicity
 
-The implementation uses an already-open registry-root directory descriptor for temporary-file creation, entry inspection, and `os.replace(..., src_dir_fd=..., dst_dir_fd=...)`. It compares `lstat`-style entry metadata with `fstat` of the open temporary descriptor, and rechecks the target identity after the temporary file is synced.
+Before registry access, managed XDG path components are checked for current-user ownership and group/other non-writability; the application and prefixes directories must be exactly `0700`. The implementation uses an already-open registry-root directory descriptor for temporary-file creation, entry inspection, and `os.replace(..., src_dir_fd=..., dst_dir_fd=...)`. It compares `lstat`-style entry metadata with `fstat` of the open temporary descriptor, and rechecks the target identity after the temporary file is synced.
 
 These checks detect important substitutions and narrow the race window. They **do not provide an atomic compare-and-swap by inode**: a same-UID actor able to mutate the directory can still race between the final identity check and rename. The project must not describe this as complete TOCTOU elimination.
 
