@@ -5,6 +5,11 @@ These tests implement the Phase-B test obligations of the 2026-11-11
 bottle-manager integration disposition: atomicity, identity
 revalidation, symlink/hard-link/foreign-owner rejection, fail-closed
 corruption handling, and concurrent read-modify-write serialization.
+
+Fixtures sit on ``OTMP_BASE`` (a filesystem honouring O_TMPFILE): after
+the 2026-11-13 fail-closed contract (§1.2) the registry has exactly one
+write path — the unnamed-inode flow — so write-flow tests require a
+capable filesystem and honestly skip where none exists.
 """
 
 from __future__ import annotations
@@ -12,12 +17,18 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
+try:
+    from _otmp_support import OTMP_BASE, O_TMPFILE_SUPPORTED
+except ImportError:  # invoked as tests.unit.… — make this dir importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _otmp_support import OTMP_BASE, O_TMPFILE_SUPPORTED
 from wine_ai.bottle_manager.create import MANAGED_ROOT_PARTS, NAME_PATTERN
 from wine_ai.bottle_manager.registry import (
     ALLOWED_RECORD_KEYS,
@@ -54,6 +65,11 @@ def prepare_root(home: Path) -> Path:
     root = app / "prefixes"
     root.mkdir(mode=0o700)
     root.chmod(0o700)
+    # Hermetic under any umask: parents=True creates the intermediates
+    # with the process umask, and the registry mode gate rejects
+    # group/world-writable components, so pin every managed component.
+    (home / ".local").chmod(0o700)
+    (home / ".local" / "share").chmod(0o700)
     return root
 
 
@@ -75,9 +91,14 @@ def make_record(name: str, root: Path, *, operation_id: str = "op-1", identity: 
     }
 
 
+@unittest.skipUnless(
+    O_TMPFILE_SUPPORTED,
+    "no O_TMPFILE-capable filesystem available (the registry's single "
+    "write path requires it — §1.2 fail-closed contract)",
+)
 class RegistrySecurityTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=OTMP_BASE)
         self.home = Path(self.tmp.name)
         self.root = prepare_root(self.home)
         self.registry = BottleRegistry(home=self.home)
@@ -118,6 +139,35 @@ class RegistrySecurityTests(unittest.TestCase):
         registry = BottleRegistry(home=empty_home)
         self.assertEqual(registry.read(), {})
         self.assertEqual(registry.orphans()["unregistered_on_disk"], {})
+
+    def test_read_does_not_create_registry_lock(self):
+        self.assertEqual(self.registry.read(), {})
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
+    def test_open_root_rejects_group_or_world_writable_xdg_parent(self):
+        share = self.home / ".local" / "share"
+        share.chmod(0o777)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.read()
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
+    def test_open_root_requires_private_application_and_prefix_directories(self):
+        app = self.home / ".local" / "share" / "wine-ai-adaptive"
+        app.chmod(0o755)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.read()
+        app.chmod(0o700)
+        self.root.chmod(0o755)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.read()
+        self.assertFalse((self.root / LOCK_NAME).exists())
+
+    def test_open_root_rejects_foreign_owned_managed_component(self):
+        real_geteuid = os.geteuid
+        with mock.patch("wine_ai.bottle_manager.registry.os.geteuid", return_value=real_geteuid() + 1):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.read()
+        self.assertFalse((self.root / LOCK_NAME).exists())
 
     def test_register_requires_existing_root(self):
         absent = BottleRegistry(home=self.home / "nowhere")
@@ -270,12 +320,13 @@ class RegistrySecurityTests(unittest.TestCase):
             with self.assertRaises(BottleRegistryError):
                 self.registry.read()
 
-    def test_lock_symlink_rejected(self):
+    def test_lock_symlink_rejected_by_writer(self):
+        self.add_bottle_dir("alpha")
         target = self.home / "outside.lock"
         target.write_text("", encoding="utf-8")
         os.symlink(target, self.root / LOCK_NAME)
         with self.assertRaises(BottleRegistryError):
-            self.registry.read()
+            self.registry.register(make_record("alpha", self.root))
 
     # -- identity revalidation -----------------------------------------------------
 
@@ -299,6 +350,119 @@ class RegistrySecurityTests(unittest.TestCase):
             os.close(root_fd)
         # the real registry survived untouched
         self.assertEqual(os.lstat(self.root / REGISTRY_NAME).st_ino, reg_ino)
+
+    def test_atomic_write_rejects_temporary_entry_swap_before_replace(self):
+        self.add_bottle_dir("alpha")
+        self.add_bottle_dir("beta")
+        self.registry.register(make_record("alpha", self.root))
+        real_stat = os.stat
+        real_open = os.open
+        real_write = os.write
+        swapped = {"done": False}
+
+        def swap_temp_before_stat(path, *args, **kwargs):
+            if (
+                isinstance(path, str) and path.endswith(".tmp")
+                and kwargs.get("dir_fd") is not None and not swapped["done"]
+            ):
+                swapped["done"] = True
+                dir_fd = kwargs["dir_fd"]
+                os.unlink(path, dir_fd=dir_fd)
+                replacement_fd = real_open(
+                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+                    dir_fd=dir_fd,
+                )
+                try:
+                    real_write(replacement_fd, b"replacement")
+                    os.fchmod(replacement_fd, 0o600)
+                finally:
+                    os.close(replacement_fd)
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch("wine_ai.bottle_manager.registry.os.stat",
+                        side_effect=swap_temp_before_stat):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.register(make_record("beta", self.root, operation_id="op-2"))
+        self.assertTrue(swapped["done"])
+        self.assertEqual(self.registry.get("alpha")["operation_id"], "op-1")
+        with self.assertRaises(BottleRegistryError):
+            self.registry.get("beta")
+        self.assertFalse(any(
+            name.endswith(".tmp") for name in os.listdir(self.root)
+        ))
+
+    def test_atomic_write_revalidates_identity_after_temp_fsync(self):
+        self.add_bottle_dir("alpha")
+        self.add_bottle_dir("beta")
+        self.registry.register(make_record("alpha", self.root))
+        real_fsync = os.fsync
+        swapped = {"done": False}
+
+        def swap_registry_after_temp_sync(fd):
+            if not swapped["done"]:
+                swapped["done"] = True
+                os.rename(self.root / REGISTRY_NAME, self.root / "registry.original")
+                replacement = self.root / REGISTRY_NAME
+                replacement.write_text(
+                    json.dumps({"registry_version": REGISTRY_VERSION, "bottles": {}}),
+                    encoding="utf-8",
+                )
+                os.chmod(replacement, 0o600)
+            return real_fsync(fd)
+
+        with mock.patch("wine_ai.bottle_manager.registry.os.fsync",
+                        side_effect=swap_registry_after_temp_sync):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.register(make_record("beta", self.root))
+        self.assertTrue(swapped["done"])
+        self.assertEqual(self.registry.read(), {})
+        self.assertFalse(any(name.endswith(".tmp") for name in os.listdir(self.root)))
+
+    def test_temp_registry_mode_is_exact_under_restrictive_umask(self):
+        self.add_bottle_dir("alpha")
+        previous = os.umask(0o777)
+        try:
+            self.registry.register(make_record("alpha", self.root))
+        finally:
+            os.umask(previous)
+        info = os.lstat(self.root / REGISTRY_NAME)
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+
+    def test_xdg_parent_group_writable_by_primary_group_is_accepted(self):
+        # Debian/Ubuntu user-private-group desktops (umask 002) leave
+        # ~/.local at 0775 owned by the user's own primary group. That
+        # group is the user alone, so the registry must still open.
+        self.add_bottle_dir("alpha")
+        local = self.home / ".local"
+        local.chmod(0o775)
+        (local / "share").chmod(0o775)
+        self.registry.register(make_record("alpha", self.root))
+        self.assertEqual(self.registry.get("alpha")["name"], "alpha")
+
+    def test_xdg_parent_world_writable_is_rejected(self):
+        self.add_bottle_dir("alpha")
+        (self.home / ".local").chmod(0o777)
+        with self.assertRaises(BottleRegistryError):
+            self.registry.register(make_record("alpha", self.root))
+        # fail-closed: nothing was written
+        self.assertFalse((self.root / REGISTRY_NAME).exists())
+
+    def test_xdg_parent_group_writable_by_foreign_group_is_rejected(self):
+        # Simulate a shared-group directory without chown: claim a
+        # different primary group for the process, so 0775 ownership
+        # no longer matches the user's primary group.
+        if not hasattr(os, "getegid"):
+            self.skipTest("no getegid on this platform")
+        self.add_bottle_dir("alpha")
+        local = self.home / ".local"
+        local.chmod(0o775)
+        with mock.patch(
+            "wine_ai.bottle_manager.registry.os.getegid",
+            return_value=os.getegid() + 1,
+        ):
+            with self.assertRaises(BottleRegistryError):
+                self.registry.register(make_record("alpha", self.root))
+        self.assertFalse((self.root / REGISTRY_NAME).exists())
 
     def test_register_after_external_swap_reads_fresh_state(self):
         # Documented behavior: register never caches identities across calls.
@@ -369,9 +533,14 @@ class RegistrySecurityTests(unittest.TestCase):
         self.assertNotIn(LOCK_NAME, report["unexpected_entries"])
 
 
+@unittest.skipUnless(
+    O_TMPFILE_SUPPORTED,
+    "no O_TMPFILE-capable filesystem available (the registry's single "
+    "write path requires it — §1.2 fail-closed contract)",
+)
 class RegistryConcurrencyTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=OTMP_BASE)
         self.home = Path(self.tmp.name)
         self.root = prepare_root(self.home)
         self.registry = BottleRegistry(home=self.home)

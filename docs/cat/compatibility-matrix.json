@@ -1,0 +1,43 @@
+{
+  "schema_version": "1",
+  "status": "UNPROVEN",
+  "applications": {
+    "trados": {
+      "versions": ["2022", "2024"],
+      "wine_versions": ["9.0", "9.21", "10.0"],
+      "prefix_arch": ["win64", "win32"],
+      "stages": {
+        "install": null,
+        "activate": null,
+        "launch": null,
+        "wpf_ui": null,
+        "fonts": null,
+        "create_project": null,
+        "reopen_project": null,
+        "tm_operations": null,
+        "terminology": null,
+        "export": null,
+        "stability_1h": null
+      }
+    },
+    "memoq": {
+      "versions": ["2022", "2024"],
+      "wine_versions": ["9.0", "9.21", "10.0"],
+      "prefix_arch": ["win64", "win32"],
+      "stages": {
+        "install": null,
+        "activate": null,
+        "launch": null,
+        "wpf_ui": null,
+        "fonts": null,
+        "create_project": null,
+        "reopen_project": null,
+        "tm_operations": null,
+        "terminology": null,
+        "export": null,
+        "stability_1h": null
+      }
+    }
+  },
+  "notes": "null = UNPROVEN. Fill each stage with {\"result\": \"PASS|FAIL|BLOCKED\", \"log\": \"path/to/sanitized/evidence.log\", \"date\": \"ISO-8601\"}. The log file must exist in the repository (sanitized: no license material, no customer content, no private paths). scripts/check_cat_matrix.py fails on any filled stage whose log is missing, and forbids changing top-level status away from UNPROVEN until EVERY stage of every application is documented. See docs/CAT_COMPATIBILITY.md for the evidence policy and docs/SECURITY_REMEDIATION_STATUS.md section 4."
+}

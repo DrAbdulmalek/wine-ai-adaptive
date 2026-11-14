@@ -5,6 +5,7 @@ import hmac
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from wine_ai.environment.snapshot import (
@@ -59,10 +60,31 @@ class WineVersionTests(unittest.TestCase):
         # The runtime contract: with allow_exec=False, no subprocess is
         # ever spawned even when wine is installed and no hint exists.
         with mock.patch(
-            "wine_ai.environment.snapshot.subprocess.run"
+            "wine_ai.environment.snapshot.run_read_only"
         ) as run_mock:
             self.assertIsNone(detect_wine_version({}, allow_exec=False))
             run_mock.assert_not_called()
+
+    def test_detect_wine_version_uses_central_command_gate(self):
+        completed = SimpleNamespace(
+            returncode=0, stdout="wine-10.0\n", stderr="", error=None,
+        )
+        with mock.patch(
+            "wine_ai.environment.snapshot.run_read_only",
+            return_value=completed,
+        ) as run_mock:
+            self.assertEqual(detect_wine_version({}), "10.0")
+        run_mock.assert_called_once_with(["wine", "--version"], timeout=5)
+
+    def test_detect_wine_version_rejects_command_gate_failure(self):
+        blocked = SimpleNamespace(
+            returncode=None, stdout="", stderr="", error="not allow-listed",
+        )
+        with mock.patch(
+            "wine_ai.environment.snapshot.run_read_only",
+            return_value=blocked,
+        ):
+            self.assertIsNone(detect_wine_version({}))
 
     def test_allow_exec_false_still_honors_environment_hint(self):
         self.assertEqual(
@@ -74,7 +96,7 @@ class WineVersionTests(unittest.TestCase):
 
     def test_collect_allow_exec_false_never_spawns(self):
         with mock.patch(
-            "wine_ai.environment.snapshot.subprocess.run"
+            "wine_ai.environment.snapshot.run_read_only"
         ) as run_mock:
             snapshot = collect(
                 env={}, prefix_path="/home/u/pfx", allow_exec=False,

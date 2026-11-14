@@ -36,8 +36,9 @@ Security properties implemented here:
   ``CHECK`` coverage: ``launcher`` (an allow-listed launcher name, never
   a path) and ``prefix_hash`` (a machine-keyed HMAC-SHA256 pseudonym
   of the prefix path, produced by ``environment.snapshot.prefix_hash_of``:
-  guessing-resistant while the local key stays on the machine, never
-  exported, and NOT anonymity — same-machine correlation is by design;
+  excluded from export and NOT anonymity or a secret against local
+  processes; cloned machine identifiers can enable cross-image linkage,
+  and truncated hashes have a non-zero collision probability;
   the raw path is never accepted or stored). Version 1, 2 and 3
   databases are upgraded by atomic migrations whose pre-checks (stored
   CREATE statement and column set) run *inside* the same ``BEGIN
@@ -100,9 +101,9 @@ LAUNCHERS = frozenset({
 
 SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+ -]{0,63}$")
 
-# Prefix pseudonym: lowercase hexadecimal, 16..64 chars (a truncated
-# SHA-256 digest produced by the environment layer; the raw prefix
-# path is never accepted here).
+# Prefix pseudonym: lowercase hexadecimal, 16..64 chars (currently a
+# 128-bit truncated HMAC-SHA256 produced by the environment layer; the
+# raw prefix path is never accepted here).
 SAFE_HASH = re.compile(r"^[a-f0-9]{16,64}$")
 
 TABLE_NAME = "diagnostic_records"
@@ -526,6 +527,12 @@ class KnowledgeStore:
 
     No raw logs, prompts, arbitrary text, file paths,
     executable contents, or prefix contents are accepted.
+
+    Evidence statuses are caller-supplied classifications, not cryptographic
+    proof. This store validates the status vocabulary and schema but does not
+    verify evidence provenance or test artifacts. Direct low-level callers
+    remain trusted to assign PROVEN honestly; recipe/bridge APIs deliberately
+    refuse to issue PROVEN until a trusted verifier exists.
 
     See the module docstring for the exact filesystem and schema
     hardening properties, and for their documented limitations.
@@ -1089,6 +1096,15 @@ class KnowledgeStore:
             EVIDENCE_STATUSES,
             "evidence_status",
         )
+        # The low-level store has no provenance verifier or approved trust
+        # anchor. Never let a caller promote an arbitrary record to PROVEN.
+        # Historical rows remain readable, but new writes must stay below
+        # PROVEN until a separately reviewed verifier is integrated.
+        if evidence_status == "PROVEN":
+            raise ValueError(
+                "PROVEN is disabled in KnowledgeStore until trusted evidence "
+                "provenance verification is implemented"
+            )
         confidence = _validate_choice(
             record["confidence"],
             CONFIDENCE_LEVELS,

@@ -1,5 +1,6 @@
 """Tests for the read-only query layer of KnowledgeStore."""
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,10 +38,20 @@ class QueryLayerTests(unittest.TestCase):
             ),
             valid_record(
                 error_category="missing_module",
-                error_code="STATUS_DLL_NOT_FOUND",
-                evidence_status="PROVEN",
             ),
         ])
+        # Simulate a legacy row written before the public API provenance gate.
+        with sqlite3.connect(self.db) as connection:
+            connection.execute("""
+                INSERT INTO diagnostic_records (
+                    created_at, wine_version, distro, error_category,
+                    evidence_status, confidence, gpu_vendor, error_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "2026-11-12T00:00:00+00:00", "11.19", "Manjaro",
+                "unknown", "PROVEN", "high", "unknown",
+                "STATUS_DLL_NOT_FOUND",
+            ))
 
     def tearDown(self):
         self.temp.cleanup()

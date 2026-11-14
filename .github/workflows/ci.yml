@@ -8,6 +8,54 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Secret scanning (unified plan §4.2): any commit introducing key
+  # material must fail CI. Runs once, not per Python version.
+  # Acceptance check (owner-side, on a scratch branch): a commit
+  # containing a realistic high-entropy AWS-shaped access key must fail
+  # this job; delete the scratch branch afterwards. Verified locally
+  # with gitleaks v8.28.0: the canonical AWS-documentation example key
+  # is allowlisted by the default config and does NOT trip the scanner,
+  # so the dummy commit must use a realistic high-entropy key. Never
+  # embed key-shaped material, even examples, in committed files.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks scans the pushed history
+
+      - name: Secret scan (gitleaks)
+        # Pinned to the commit the v2 tag dereferences (verified via
+        # git ls-remote 2026-11-13); a floating tag would allow silent
+        # action swaps.
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Documentation contract checks (unified plan §5.1/§5.2): the CAT
+  # compatibility matrix must never claim evidence without an existing
+  # sanitized log, and STATUS.md stays the single source of truth.
+  # Runs once, not per Python version; the unit tests for both scripts
+  # (tests/unit/test_cat_matrix.py, test_release_docs.py) run in the
+  # tests job.
+  docs-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: CAT compatibility matrix check
+        run: python scripts/check_cat_matrix.py
+
+      - name: STATUS.md single-source check
+        run: python scripts/check_status_refs.py
+
   tests:
     runs-on: ubuntu-latest
     strategy:

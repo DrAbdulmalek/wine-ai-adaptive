@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from wine_ai.gpu_compatibility.probe import parse_vulkan_summary, probe_vulkan
 
@@ -57,6 +59,24 @@ class VulkanSummaryParsingTests(unittest.TestCase):
 
 
 class GPUProbeTests(unittest.TestCase):
+
+    def test_probe_uses_bare_allowlisted_command(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="vendorID = 0x8086\ndeviceName = Test GPU\n",
+            stderr="",
+            error=None,
+        )
+        with (
+            mock.patch("wine_ai.gpu_compatibility.probe.shutil.which",
+                       return_value="/usr/bin/vulkaninfo"),
+            mock.patch("wine_ai.gpu_compatibility.probe.run_read_only",
+                       return_value=completed) as run,
+        ):
+            data, evidence = probe_vulkan()
+        run.assert_called_once_with(["vulkaninfo", "--summary"], timeout=12)
+        self.assertTrue(data["available"])
+        self.assertEqual(data["device_names"], ["Test GPU"])
 
     def test_probe_returns_structured_result(self):
 

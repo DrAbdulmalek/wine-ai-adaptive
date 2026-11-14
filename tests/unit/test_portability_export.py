@@ -39,6 +39,20 @@ def _add(store, **overrides):
     return store.add_record(**base)
 
 
+def _add_legacy_proven(store):
+    """Insert a pre-gate historical row to exercise read/export compatibility."""
+    with sqlite3.connect(str(store.db_path)) as connection:
+        connection.execute("""
+            INSERT INTO diagnostic_records (
+                created_at, wine_version, distro, error_category,
+                evidence_status, confidence, gpu_vendor, error_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "2026-11-12T00:00:00+00:00", "11.19", "Manjaro",
+            "memory", "PROVEN", "high", "amd", "STATUS_DLL_NOT_FOUND",
+        ))
+
+
 class ExportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -61,8 +75,7 @@ class ExportTests(unittest.TestCase):
 
     def test_round_trip_all_fields_preserved(self):
         _add(self.store, error_code="0xC0000005", gpu_vendor="intel")
-        _add(self.store, error_category="memory", evidence_status="PROVEN",
-             confidence="high", error_code="STATUS_DLL_NOT_FOUND")
+        _add_legacy_proven(self.store)
         package = export_records(self.store)
         self.assertEqual(package["record_count"], 2)
         codes = sorted(r.get("error_code", "") for r in package["records"])
