@@ -37,11 +37,15 @@ __all__ = [
 ]
 
 MAX_SCAN_SUBDIRS = 64
-REG_HEADER_BYTES = 64
+REG_HEADER_BYTES = 4096
 
 MARKER_DIR = "drive_c"
 MARKER_FILES = ("system.reg", "user.reg", "userdef.reg")
-_ARCH_LINE = re.compile(r"^#{1,2}\s*arch\s*-\s*win(32|64)\s*$")
+# Real Wine registry files start with a "WINE REGISTRY Version 2" banner and
+# carry the architecture on its own header line: "#arch=win32" / "#arch=win64".
+# The previous "# arch - win64" text pattern matched no real Wine file, so
+# every genuine prefix kept architecture UNPROVEN.
+_ARCH_HEADER_LINE = re.compile(rb"^#arch=win(32|64)$", re.MULTILINE)
 _MANAGED_ROOT_PARTS = (".local", "share", "wine-ai-adaptive", "prefixes")
 
 
@@ -139,6 +143,20 @@ def _stat_at(directory_fd: int, name: str):
     return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
 
 
+def _parse_arch(raw: bytes) -> str | None:
+    """Parse the real Wine registry header line ``#arch=win32|win64``.
+
+    Byte-exact per-line matching (``re.MULTILINE``) keeps the parse
+    independent of decode-replacement artifacts and cannot be satisfied by
+    a look-alike line with trailing text. A header without the line stays
+    unknown: the caller reports UNPROVEN rather than guessing a default.
+    """
+    match = _ARCH_HEADER_LINE.search(raw)
+    if not match:
+        return None
+    return f"win{match.group(1).decode('ascii')}"
+
+
 def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
     """Read only a regular system.reg file; FIFO opens are non-blocking."""
     try:
@@ -174,11 +192,10 @@ def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
     finally:
         os.close(fd)
 
-    first_line = raw.decode("utf-8", errors="replace").split("\n", 1)[0]
-    match = _ARCH_LINE.match(first_line.strip())
-    if not match:
+    architecture = _parse_arch(raw)
+    if architecture is None:
         return None, None
-    return f"win{match.group(1)}", None
+    return architecture, None
 
 
 def _probe_nested_directory(
