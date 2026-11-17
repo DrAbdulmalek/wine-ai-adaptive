@@ -30,6 +30,7 @@ from pathlib import Path
 from wine_ai.evidence import Evidence, EvidenceStatus
 
 __all__ = [
+    "MAX_SCAN_ENTRIES",
     "MAX_SCAN_SUBDIRS",
     "REG_HEADER_BYTES",
     "discover_prefixes",
@@ -37,6 +38,7 @@ __all__ = [
 ]
 
 MAX_SCAN_SUBDIRS = 64
+MAX_SCAN_ENTRIES = 4096
 REG_HEADER_BYTES = 4096
 
 MARKER_DIR = "drive_c"
@@ -484,12 +486,12 @@ def discover_prefixes(
 
         try:
             entries_to_scan: list[tuple[str, int, int, int]] = []
-            overflow = False
+            entry_overflow = False
             try:
                 with os.scandir(root_fd) as entries:
                     for entry in entries:
-                        if len(entries_to_scan) == MAX_SCAN_SUBDIRS:
-                            overflow = True
+                        if len(entries_to_scan) == MAX_SCAN_ENTRIES:
+                            entry_overflow = True
                             break
                         # The no-follow stat snapshot is the identity
                         # expectation. readdir's d_ino is intentionally not
@@ -512,7 +514,21 @@ def discover_prefixes(
                 ))
                 return
 
+            # Deterministic bounds (F3): the collected entries are sorted by
+            # name, at most MAX_SCAN_SUBDIRS directories are processed, and
+            # every entry type counts toward MAX_SCAN_ENTRIES. A flood of
+            # regular files no longer hides real prefixes behind the
+            # directory bound, and the processed set stays independent of
+            # readdir order (bounded by the entry cap collected first).
+            processed_subdirs = 0
+            subdir_overflow = False
             for name, expected_dev, expected_ino, entry_mode in sorted(entries_to_scan):
+                if (
+                    stat.S_ISDIR(entry_mode)
+                    and processed_subdirs == MAX_SCAN_SUBDIRS
+                ):
+                    subdir_overflow = True
+                    break
                 if stat.S_ISLNK(entry_mode):
                     evidence.append(Evidence(
                         "prefix_candidate", EvidenceStatus.BLOCKED,
@@ -523,6 +539,7 @@ def discover_prefixes(
                     continue
                 if not stat.S_ISDIR(entry_mode):
                     continue
+                processed_subdirs += 1
                 candidate_fd = None
                 try:
                     candidate_fd = os.open(name, _directory_flags(), dir_fd=root_fd)
@@ -551,17 +568,30 @@ def discover_prefixes(
                 finally:
                     if candidate_fd is not None:
                         os.close(candidate_fd)
-            if overflow:
+            if subdir_overflow or entry_overflow:
+                details = {
+                    "path": str(root),
+                    "scanned": len(entries_to_scan),
+                    "subdirs_scanned": processed_subdirs,
+                    "additional_entries_not_enumerated": True,
+                }
+                if subdir_overflow:
+                    details["limit"] = MAX_SCAN_SUBDIRS
+                    summary = (
+                        "Scan capped at MAX_SCAN_SUBDIRS subdirectories; "
+                        "remaining entries were not enumerated"
+                    )
+                else:
+                    details["limit"] = MAX_SCAN_ENTRIES
+                    summary = (
+                        "Scan capped at MAX_SCAN_ENTRIES entries; "
+                        "remaining entries were not enumerated"
+                    )
                 evidence.append(Evidence(
                     "prefix_discovery", EvidenceStatus.PARTIALLY_PROVEN,
-                    "Scan capped at MAX_SCAN_SUBDIRS entries; remaining entries were not enumerated",
+                    summary,
                     f"bottle_manager.discovery:{origin}",
-                    {
-                        "path": str(root),
-                        "scanned": len(entries_to_scan),
-                        "limit": MAX_SCAN_SUBDIRS,
-                        "additional_entries_not_enumerated": True,
-                    },
+                    details,
                 ))
         finally:
             os.close(root_fd)
