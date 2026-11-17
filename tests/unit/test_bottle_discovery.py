@@ -29,7 +29,9 @@ def make_prefix(
 ) -> Path:
     path = root / name
     (path / "drive_c").mkdir(parents=True)
-    (path / "system.reg").write_text(f"##arch - {arch}\n", encoding="ascii")
+    (path / "system.reg").write_text(
+        f"WINE REGISTRY Version 2\n#arch={arch}\n", encoding="ascii"
+    )
     for reg in MARKER_FILES[1:]:
         (path / reg).write_text("## WINE registry\n", encoding="ascii")
     if with_syswow64:
@@ -84,7 +86,9 @@ class DiscoverPrefixesTests(unittest.TestCase):
         managed.mkdir(parents=True)
         bare = managed / "not-a-prefix"
         bare.mkdir()
-        (bare / "system.reg").write_text("##arch - win64\n", encoding="ascii")
+        (bare / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n", encoding="ascii"
+        )
 
         prefixes, evidence = discover_prefixes(home=self.home)
         self.assertEqual(
@@ -145,7 +149,9 @@ class DiscoverPrefixesTests(unittest.TestCase):
         managed.mkdir(parents=True)
         prefix = make_prefix(managed, "shady")
         target = self.home / "outside.reg"
-        target.write_text("##arch - win64\n", encoding="ascii")
+        target.write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n", encoding="ascii"
+        )
         (prefix / "user.reg").unlink()
         os.symlink(target, prefix / "user.reg")
 
@@ -229,6 +235,77 @@ class DiscoverPrefixesTests(unittest.TestCase):
         ]
         self.assertTrue(unproven)
 
+    def test_real_wine_registry_header_is_parsed(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = managed / "trados"
+        (prefix / "drive_c").mkdir(parents=True)
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n\n[Software\\\\Wine]\n",
+            encoding="ascii",
+        )
+        for reg in MARKER_FILES[1:]:
+            (prefix / reg).write_text("## WINE registry\n", encoding="ascii")
+
+        prefixes, evidence = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "trados"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["architecture"], "win64")
+        self.assertTrue(any(
+            item.status.value == "PROVEN"
+            and "Architecture win64 from system.reg header" in item.summary
+            for item in evidence
+        ))
+
+    def test_arch_line_beyond_a_64_byte_window_is_parsed(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = make_prefix(managed, "padded")
+        padding = "#comment line padding\n" * 12  # 264 bytes > 64
+        (prefix / "system.reg").write_text(
+            f"WINE REGISTRY Version 2\n{padding}#arch=win64\n",
+            encoding="ascii",
+        )
+        self.assertGreater(
+            (prefix / "system.reg").stat().st_size, 64
+        )
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "padded"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["architecture"], "win64")
+
+    def test_header_without_arch_line_stays_unproven(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = make_prefix(managed, "oldstyle")
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n", encoding="ascii"
+        )
+
+        prefixes, evidence = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "oldstyle"]
+        self.assertEqual(len(match), 1)
+        self.assertIsNone(match[0]["architecture"])
+        self.assertTrue(any(
+            item.status.value == "UNPROVEN"
+            and "left unknown" in item.summary
+            for item in evidence
+        ))
+
+    def test_arch_line_with_trailing_text_is_not_accepted(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = make_prefix(managed, "smuggled")
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64 extra\n#arch=win324\n",
+            encoding="ascii",
+        )
+
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "smuggled"]
+        self.assertEqual(len(match), 1)
+        self.assertIsNone(match[0]["architecture"])
+
     def test_arch_signal_conflict_is_contradicted_not_guessed(self):
         managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
         managed.mkdir(parents=True)
@@ -262,6 +339,26 @@ class DiscoverPrefixesTests(unittest.TestCase):
             and "capped" in item.summary
         ]
         self.assertEqual(len(capped), 1)
+
+    def test_file_flood_does_not_hide_prefixes(self):
+        # Regression (F3): the old single 64-entry cap counted regular
+        # files, so >64 files in the container root hid every real prefix
+        # behind an overflow. Files now count only toward MAX_SCAN_ENTRIES.
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        make_prefix(managed, "buried", arch="win64")
+        for index in range(100):
+            (managed / f"noise-{index:03d}.txt").write_text("", encoding="ascii")
+
+        prefixes, evidence = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "buried"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["architecture"], "win64")
+        overflow = [
+            item for item in evidence
+            if item.status.value == "PARTIALLY_PROVEN"
+        ]
+        self.assertEqual(overflow, [])
 
     def test_container_root_with_foreign_file_type_is_skipped(self):
         managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"

@@ -21,7 +21,9 @@ from wine_ai.bottle_manager.discovery import (
 def make_prefix(root: Path, name: str = "prefix", arch: str = "win64") -> Path:
     path = root / name
     (path / "drive_c").mkdir(parents=True)
-    (path / "system.reg").write_text(f"##arch - {arch}\n", encoding="ascii")
+    (path / "system.reg").write_text(
+        f"WINE REGISTRY Version 2\n#arch={arch}\n", encoding="ascii"
+    )
     (path / "user.reg").write_text("## WINE registry\n", encoding="ascii")
     (path / "userdef.reg").write_text("## WINE registry\n", encoding="ascii")
     return path
@@ -225,6 +227,32 @@ class BottleDiscoverySecurityTests(unittest.TestCase):
             and "capped at MAX_SCAN_SUBDIRS" in item.summary
             for item in evidence
         ))
+
+    def test_entry_cap_records_overflow_independently_of_dir_cap(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        # Files only, no directory: whatever readdir order is, a 9-entry
+        # cap on 10 files must record an entry-bound overflow, not a
+        # directory-bound one, and must not enumerate past the cap.
+        for index in range(10):
+            (managed / f"file-{index:02d}").write_text("", encoding="ascii")
+
+        with mock.patch.object(discovery, "MAX_SCAN_ENTRIES", 9):
+            prefixes, evidence = discover_prefixes(home=self.home)
+
+        self.assertEqual(
+            [p for p in prefixes if p["origin"] == "managed_root"], []
+        )
+        capped = [
+            item for item in evidence
+            if item.status.value == "PARTIALLY_PROVEN"
+            and "capped at MAX_SCAN_ENTRIES" in item.summary
+        ]
+        self.assertEqual(len(capped), 1)
+        self.assertEqual(capped[0].details["limit"], 9)
+        self.assertEqual(capped[0].details["scanned"], 9)
+        self.assertEqual(capped[0].details["subdirs_scanned"], 0)
+        self.assertTrue(capped[0].details["additional_entries_not_enumerated"])
 
     def test_non_regular_registry_marker_is_rejected(self):
         prefix = make_prefix(self.home)
