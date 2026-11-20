@@ -508,10 +508,11 @@ class DiscoverPrefixesTests(unittest.TestCase):
 
     def test_registry_header_truncated_at_read_limit_is_not_accepted(self):
         prefix = make_prefix(self.home, "truncated-header")
+        banner = b"WINE REGISTRY Version 2\n"
         token = b"#arch=win64"
-        padding_size = REG_HEADER_BYTES - len(token)
+        padding_size = REG_HEADER_BYTES - len(banner) - len(token)
         padding = b"#" + (b"x" * (padding_size - 2)) + b"\n"
-        payload = padding + token + b"X\n"
+        payload = banner + padding + token + b"X\n"
         self.assertEqual(len(payload[:REG_HEADER_BYTES]), REG_HEADER_BYTES)
         self.assertGreater(len(payload), REG_HEADER_BYTES)
         (prefix / "system.reg").write_bytes(payload)
