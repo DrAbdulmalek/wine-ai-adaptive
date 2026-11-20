@@ -146,25 +146,40 @@ def _stat_at(directory_fd: int, name: str):
 
 
 def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
-    """Parse a complete Wine registry header line ``#arch=win32|win64``.
+    """Parse one unambiguous architecture option from a Wine registry preamble.
 
-    Lines are matched byte-for-byte after removing the CR in CRLF files.
-    An unterminated final line is accepted only when the caller has proved
-    EOF; this prevents a valid-looking prefix at the 4096-byte read boundary
-    from being accepted when trailing bytes were not inspected.
+    Wine's v2 format starts with the exact version banner. Global options
+    (including #arch) belong to the preamble before the first registry key.
+    Ignore later key data, and fail closed on malformed or repeated options.
     """
-    lines = raw.split(b"\n")
-    for index, line in enumerate(lines):
+    lines = raw.split(b"\\n")
+    first = lines[0]
+    if first.endswith(b"\\r"):
+        first = first[:-1]
+    if first != b"WINE REGISTRY Version 2":
+        return None
+    if len(lines) == 1 and not eof:
+        return None
+
+    architecture: str | None = None
+    for index, line in enumerate(lines[1:], start=1):
         is_last = index == len(lines) - 1
         if is_last and not eof:
+            # The final unterminated line may be truncated by the read bound.
             break
-        if line.endswith(b"\r"):
+        if line.endswith(b"\\r"):
             line = line[:-1]
+        if line.lstrip(b" \\t").startswith(b"["):
+            break
+        if not line.startswith(b"#arch="):
+            continue
         match = _ARCH_HEADER_LINE.fullmatch(line)
-        if match:
-            return f"win{match.group(1).decode('ascii')}"
-    return None
-
+        if match is None or architecture is not None:
+            # Malformed, duplicate (even identical), or conflicting options
+            # are ambiguous and must never establish an architecture.
+            return None
+        architecture = f"win{match.group(1).decode('ascii')}"
+    return architecture
 
 def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
     """Read a bounded header from a regular system.reg; FIFO opens are non-blocking."""
