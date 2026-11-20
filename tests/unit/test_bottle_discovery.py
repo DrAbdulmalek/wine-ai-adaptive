@@ -397,7 +397,7 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_fake_arch_line_without_wine_banner_stays_unproven(self):
         prefix = make_prefix(self.home, "fake-banner")
         (prefix / "system.reg").write_bytes(
-            b"NOT A WINE REGISTRY\\n#arch=win64\\n"
+            b"NOT A WINE REGISTRY\n#arch=win64\n"
         )
         info, evidence = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
@@ -410,10 +410,10 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_arch_line_after_first_registry_key_is_not_header_metadata(self):
         prefix = make_prefix(self.home, "late-arch")
         (prefix / "system.reg").write_bytes(
-            b"WINE REGISTRY Version 2\\n"
-            b";; header comment\\n"
-            b"[Software\\\\Wine]\\n"
-            b"#arch=win64\\n"
+            b"WINE REGISTRY Version 2\n"
+            b";; header comment\n"
+            b"[Software\\Wine]\n"
+            b"#arch=win64\n"
         )
         info, _ = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
@@ -422,7 +422,7 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_duplicate_identical_arch_options_stay_unproven(self):
         prefix = make_prefix(self.home, "duplicate-arch")
         (prefix / "system.reg").write_bytes(
-            b"WINE REGISTRY Version 2\\n#arch=win64\\n#arch=win64\\n"
+            b"WINE REGISTRY Version 2\n#arch=win64\n#arch=win64\n"
         )
         info, _ = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
@@ -431,7 +431,7 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_conflicting_arch_options_stay_unproven(self):
         prefix = make_prefix(self.home, "conflicting-arch")
         (prefix / "system.reg").write_bytes(
-            b"WINE REGISTRY Version 2\\n#arch=win32\\n#arch=win64\\n"
+            b"WINE REGISTRY Version 2\n#arch=win32\n#arch=win64\n"
         )
         info, _ = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
@@ -440,7 +440,7 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_malformed_arch_option_in_preamble_stays_unproven(self):
         prefix = make_prefix(self.home, "malformed-arch")
         (prefix / "system.reg").write_bytes(
-            b"WINE REGISTRY Version 2\\n#arch=win64-extra\\n"
+            b"WINE REGISTRY Version 2\n#arch=win64-extra\n"
         )
         info, _ = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
@@ -449,10 +449,10 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_arch_option_after_key_does_not_duplicate_header_arch(self):
         prefix = make_prefix(self.home, "arch-after-key")
         (prefix / "system.reg").write_bytes(
-            b"WINE REGISTRY Version 2\\n"
-            b"#arch=win64\\n"
-            b"[Software\\\\Wine]\\n"
-            b"#arch=win32\\n"
+            b"WINE REGISTRY Version 2\n"
+            b"#arch=win64\n"
+            b"[Software\\Wine]\n"
+            b"#arch=win32\n"
         )
         info, _ = inspect_prefix(prefix, home=self.home)
         self.assertIsNotNone(info)
