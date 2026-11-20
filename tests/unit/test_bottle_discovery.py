@@ -397,7 +397,7 @@ class DiscoverPrefixesTests(unittest.TestCase):
     def test_registry_header_accepts_crlf_line_endings(self):
         prefix = make_prefix(self.home, "crlf")
         (prefix / "system.reg").write_bytes(
-            b"WINE REGISTRY Version 2\\r\\n#arch=win64\\r\\n\\r\\n"
+            b"WINE REGISTRY Version 2\r\n#arch=win64\r\n\r\n"
         )
 
         info, evidence = inspect_prefix(prefix, home=self.home)
@@ -429,10 +429,10 @@ class DiscoverPrefixesTests(unittest.TestCase):
 
     def test_registry_header_at_exact_read_limit_is_accepted_at_eof(self):
         prefix = make_prefix(self.home, "header-at-limit")
-        banner = b"WINE REGISTRY Version 2\\n"
-        header = b"#arch=win64\\n"
+        banner = b"WINE REGISTRY Version 2\n"
+        header = b"#arch=win64\n"
         padding_size = REG_HEADER_BYTES - len(banner) - len(header)
-        padding = b"#" + (b"x" * (padding_size - 2)) + b"\\n"
+        padding = b"#" + (b"x" * (padding_size - 2)) + b"\n"
         payload = banner + padding + header
         self.assertEqual(len(payload), REG_HEADER_BYTES)
         (prefix / "system.reg").write_bytes(payload)
@@ -446,8 +446,8 @@ class DiscoverPrefixesTests(unittest.TestCase):
         prefix = make_prefix(self.home, "truncated-header")
         token = b"#arch=win64"
         padding_size = REG_HEADER_BYTES - len(token)
-        padding = b"#" + (b"x" * (padding_size - 2)) + b"\\n"
-        payload = padding + token + b"X\\n"
+        padding = b"#" + (b"x" * (padding_size - 2)) + b"\n"
+        payload = padding + token + b"X\n"
         self.assertEqual(len(payload[:REG_HEADER_BYTES]), REG_HEADER_BYTES)
         self.assertGreater(len(payload), REG_HEADER_BYTES)
         (prefix / "system.reg").write_bytes(payload)
