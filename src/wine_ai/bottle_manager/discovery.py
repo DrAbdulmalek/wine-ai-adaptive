@@ -162,14 +162,19 @@ def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
         return None
 
     architecture: str | None = None
+    found_first_key = False
     for index, line in enumerate(lines[1:], start=1):
         is_last = index == len(lines) - 1
         if is_last and not eof:
-            # The final unterminated line may be truncated by the read bound.
+            # Do not accept a partial architecture directive, or claim
+            # uniqueness while the preamble may continue beyond the read bound.
+            if line.startswith(b"#arch"):
+                return None
             break
         if line.endswith(b"\r"):
             line = line[:-1]
         if line.lstrip(b" \t").startswith(b"["):
+            found_first_key = True
             break
         if not line.startswith(b"#arch="):
             continue
@@ -179,6 +184,8 @@ def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
             # are ambiguous and must never establish an architecture.
             return None
         architecture = f"win{match.group(1).decode('ascii')}"
+    if not eof and not found_first_key:
+        return None
     return architecture
 
 
