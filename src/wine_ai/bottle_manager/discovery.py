@@ -152,9 +152,9 @@ def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
     (including #arch) belong to the preamble before the first registry key.
     Ignore later key data, and fail closed on malformed or repeated options.
     """
-    lines = raw.split(b"\\n")
+    lines = raw.split(b"\n")
     first = lines[0]
-    if first.endswith(b"\\r"):
+    if first.endswith(b"\r"):
         first = first[:-1]
     if first != b"WINE REGISTRY Version 2":
         return None
@@ -167,9 +167,9 @@ def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
         if is_last and not eof:
             # The final unterminated line may be truncated by the read bound.
             break
-        if line.endswith(b"\\r"):
+        if line.endswith(b"\r"):
             line = line[:-1]
-        if line.lstrip(b" \\t").startswith(b"["):
+        if line.lstrip(b" \t").startswith(b"["):
             break
         if not line.startswith(b"#arch="):
             continue
