@@ -14,6 +14,7 @@ from unittest import mock
 
 from wine_ai.bottle_manager.discovery import (
     MAX_SCAN_SUBDIRS,
+    REG_HEADER_BYTES,
     discover_prefixes,
     inspect_prefix,
 )
@@ -29,7 +30,9 @@ def make_prefix(
 ) -> Path:
     path = root / name
     (path / "drive_c").mkdir(parents=True)
-    (path / "system.reg").write_text(f"##arch - {arch}\n", encoding="ascii")
+    (path / "system.reg").write_text(
+        f"WINE REGISTRY Version 2\n#arch={arch}\n", encoding="ascii"
+    )
     for reg in MARKER_FILES[1:]:
         (path / reg).write_text("## WINE registry\n", encoding="ascii")
     if with_syswow64:
@@ -84,7 +87,9 @@ class DiscoverPrefixesTests(unittest.TestCase):
         managed.mkdir(parents=True)
         bare = managed / "not-a-prefix"
         bare.mkdir()
-        (bare / "system.reg").write_text("##arch - win64\n", encoding="ascii")
+        (bare / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n", encoding="ascii"
+        )
 
         prefixes, evidence = discover_prefixes(home=self.home)
         self.assertEqual(
@@ -145,7 +150,9 @@ class DiscoverPrefixesTests(unittest.TestCase):
         managed.mkdir(parents=True)
         prefix = make_prefix(managed, "shady")
         target = self.home / "outside.reg"
-        target.write_text("##arch - win64\n", encoding="ascii")
+        target.write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n", encoding="ascii"
+        )
         (prefix / "user.reg").unlink()
         os.symlink(target, prefix / "user.reg")
 
@@ -229,6 +236,77 @@ class DiscoverPrefixesTests(unittest.TestCase):
         ]
         self.assertTrue(unproven)
 
+    def test_real_wine_registry_header_is_parsed(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = managed / "trados"
+        (prefix / "drive_c").mkdir(parents=True)
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n\n[Software\\\\Wine]\n",
+            encoding="ascii",
+        )
+        for reg in MARKER_FILES[1:]:
+            (prefix / reg).write_text("## WINE registry\n", encoding="ascii")
+
+        prefixes, evidence = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "trados"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["architecture"], "win64")
+        self.assertTrue(any(
+            item.status.value == "PROVEN"
+            and "Architecture win64 from system.reg header" in item.summary
+            for item in evidence
+        ))
+
+    def test_arch_line_beyond_a_64_byte_window_is_parsed(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = make_prefix(managed, "padded")
+        padding = "#comment line padding\n" * 12  # 264 bytes > 64
+        (prefix / "system.reg").write_text(
+            f"WINE REGISTRY Version 2\n{padding}#arch=win64\n",
+            encoding="ascii",
+        )
+        self.assertGreater(
+            (prefix / "system.reg").stat().st_size, 64
+        )
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "padded"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["architecture"], "win64")
+
+    def test_header_without_arch_line_stays_unproven(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = make_prefix(managed, "oldstyle")
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n", encoding="ascii"
+        )
+
+        prefixes, evidence = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "oldstyle"]
+        self.assertEqual(len(match), 1)
+        self.assertIsNone(match[0]["architecture"])
+        self.assertTrue(any(
+            item.status.value == "UNPROVEN"
+            and "left unknown" in item.summary
+            for item in evidence
+        ))
+
+    def test_arch_line_with_trailing_text_is_not_accepted(self):
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        prefix = make_prefix(managed, "smuggled")
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64 extra\n#arch=win324\n",
+            encoding="ascii",
+        )
+
+        prefixes, _ = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "smuggled"]
+        self.assertEqual(len(match), 1)
+        self.assertIsNone(match[0]["architecture"])
+
     def test_arch_signal_conflict_is_contradicted_not_guessed(self):
         managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
         managed.mkdir(parents=True)
@@ -263,6 +341,26 @@ class DiscoverPrefixesTests(unittest.TestCase):
         ]
         self.assertEqual(len(capped), 1)
 
+    def test_file_flood_does_not_hide_prefixes(self):
+        # Regression (F3): the old single 64-entry cap counted regular
+        # files, so >64 files in the container root hid every real prefix
+        # behind an overflow. Files now count only toward MAX_SCAN_ENTRIES.
+        managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
+        managed.mkdir(parents=True)
+        make_prefix(managed, "buried", arch="win64")
+        for index in range(100):
+            (managed / f"noise-{index:03d}.txt").write_text("", encoding="ascii")
+
+        prefixes, evidence = discover_prefixes(home=self.home)
+        match = [p for p in prefixes if p["name"] == "buried"]
+        self.assertEqual(len(match), 1)
+        self.assertEqual(match[0]["architecture"], "win64")
+        overflow = [
+            item for item in evidence
+            if item.status.value == "PARTIALLY_PROVEN"
+        ]
+        self.assertEqual(overflow, [])
+
     def test_container_root_with_foreign_file_type_is_skipped(self):
         managed = self.home / ".local" / "share" / "wine-ai-adaptive" / "prefixes"
         managed.mkdir(parents=True)
@@ -294,6 +392,158 @@ class DiscoverPrefixesTests(unittest.TestCase):
         discover_prefixes(home=self.home)
         after = snapshot()
         self.assertEqual(before, after)
+
+
+    def test_fake_arch_line_without_wine_banner_stays_unproven(self):
+        prefix = make_prefix(self.home, "fake-banner")
+        (prefix / "system.reg").write_bytes(
+            b"NOT A WINE REGISTRY\n#arch=win64\n"
+        )
+        info, evidence = inspect_prefix(prefix, home=self.home)
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+        self.assertTrue(any(
+            item.status.value == "UNPROVEN" and "left unknown" in item.summary
+            for item in evidence
+        ))
+
+    def test_arch_line_after_first_registry_key_is_not_header_metadata(self):
+        prefix = make_prefix(self.home, "late-arch")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\n"
+            b";; header comment\n"
+            b"[Software\\Wine]\n"
+            b"#arch=win64\n"
+        )
+        info, _ = inspect_prefix(prefix, home=self.home)
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+
+    def test_duplicate_identical_arch_options_stay_unproven(self):
+        prefix = make_prefix(self.home, "duplicate-arch")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\n#arch=win64\n#arch=win64\n"
+        )
+        info, _ = inspect_prefix(prefix, home=self.home)
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+
+    def test_conflicting_arch_options_stay_unproven(self):
+        prefix = make_prefix(self.home, "conflicting-arch")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\n#arch=win32\n#arch=win64\n"
+        )
+        info, _ = inspect_prefix(prefix, home=self.home)
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+
+    def test_malformed_arch_option_in_preamble_stays_unproven(self):
+        prefix = make_prefix(self.home, "malformed-arch")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\n#arch=win64-extra\n"
+        )
+        info, _ = inspect_prefix(prefix, home=self.home)
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+
+    def test_arch_option_after_key_does_not_duplicate_header_arch(self):
+        prefix = make_prefix(self.home, "arch-after-key")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\n"
+            b"#arch=win64\n"
+            b"[Software\\Wine]\n"
+            b"#arch=win32\n"
+        )
+        info, _ = inspect_prefix(prefix, home=self.home)
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+
+    def test_registry_header_accepts_crlf_line_endings(self):
+        prefix = make_prefix(self.home, "crlf")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\r\n#arch=win64\r\n\r\n"
+        )
+
+        info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+        self.assertTrue(any(
+            item.status.value == "PROVEN"
+            and "Architecture win64 from system.reg header" in item.summary
+            for item in evidence
+        ))
+
+    def test_registry_header_parser_handles_short_reads(self):
+        prefix = make_prefix(self.home, "short-reads")
+        real_read = os.read
+        read_sizes = []
+
+        def short_read(fd, size):
+            read_sizes.append(size)
+            return real_read(fd, min(size, 3))
+
+        with mock.patch("wine_ai.bottle_manager.discovery.os.read",
+                        side_effect=short_read):
+            info, _ = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+        self.assertGreater(len(read_sizes), 1)
+
+    def test_registry_header_at_exact_read_limit_is_accepted_at_eof(self):
+        prefix = make_prefix(self.home, "header-at-limit")
+        banner = b"WINE REGISTRY Version 2\n"
+        header = b"#arch=win64\n"
+        padding_size = REG_HEADER_BYTES - len(banner) - len(header)
+        padding = b"#" + (b"x" * (padding_size - 2)) + b"\n"
+        payload = banner + padding + header
+        self.assertEqual(len(payload), REG_HEADER_BYTES)
+        (prefix / "system.reg").write_bytes(payload)
+
+        info, _ = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+
+    def test_architecture_is_unproven_when_preamble_may_continue_past_limit(self):
+        prefix = make_prefix(self.home, "open-preamble")
+        banner = b"WINE REGISTRY Version 2\n"
+        architecture = b"#arch=win64\n"
+        padding_size = REG_HEADER_BYTES - len(banner) - len(architecture)
+        padding = (b";" * (padding_size - 1)) + b"\n"
+        payload = (
+            banner + architecture + padding
+            + b"#arch=win32\n[Software\\Wine]\n"
+        )
+        self.assertGreater(len(payload), REG_HEADER_BYTES)
+        (prefix / "system.reg").write_bytes(payload)
+
+        info, _ = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+
+    def test_registry_header_truncated_at_read_limit_is_not_accepted(self):
+        prefix = make_prefix(self.home, "truncated-header")
+        banner = b"WINE REGISTRY Version 2\n"
+        token = b"#arch=win64"
+        padding_size = REG_HEADER_BYTES - len(banner) - len(token)
+        padding = b"#" + (b"x" * (padding_size - 2)) + b"\n"
+        payload = banner + padding + token + b"X\n"
+        self.assertEqual(len(payload[:REG_HEADER_BYTES]), REG_HEADER_BYTES)
+        self.assertGreater(len(payload), REG_HEADER_BYTES)
+        (prefix / "system.reg").write_bytes(payload)
+
+        info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+        self.assertTrue(any(
+            item.status.value == "UNPROVEN"
+            and "left unknown" in item.summary
+            for item in evidence
+        ))
 
 
 class InspectPrefixTests(unittest.TestCase):

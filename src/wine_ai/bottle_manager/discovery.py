@@ -30,6 +30,7 @@ from pathlib import Path
 from wine_ai.evidence import Evidence, EvidenceStatus
 
 __all__ = [
+    "MAX_SCAN_ENTRIES",
     "MAX_SCAN_SUBDIRS",
     "REG_HEADER_BYTES",
     "discover_prefixes",
@@ -37,11 +38,16 @@ __all__ = [
 ]
 
 MAX_SCAN_SUBDIRS = 64
-REG_HEADER_BYTES = 64
+MAX_SCAN_ENTRIES = 4096
+REG_HEADER_BYTES = 4096
 
 MARKER_DIR = "drive_c"
 MARKER_FILES = ("system.reg", "user.reg", "userdef.reg")
-_ARCH_LINE = re.compile(r"^#{1,2}\s*arch\s*-\s*win(32|64)\s*$")
+# Real Wine registry files start with a "WINE REGISTRY Version 2" banner and
+# carry the architecture on its own header line: "#arch=win32" / "#arch=win64".
+# The previous "# arch - win64" text pattern matched no real Wine file, so
+# every genuine prefix kept architecture UNPROVEN.
+_ARCH_HEADER_LINE = re.compile(rb"#arch=win(32|64)")
 _MANAGED_ROOT_PARTS = (".local", "share", "wine-ai-adaptive", "prefixes")
 
 
@@ -139,8 +145,52 @@ def _stat_at(directory_fd: int, name: str):
     return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
 
 
+def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
+    """Parse one unambiguous architecture option from a Wine registry preamble.
+
+    Wine's v2 format starts with the exact version banner. Global options
+    (including #arch) belong to the preamble before the first registry key.
+    Ignore later key data, and fail closed on malformed or repeated options.
+    """
+    lines = raw.split(b"\n")
+    first = lines[0]
+    if first.endswith(b"\r"):
+        first = first[:-1]
+    if first != b"WINE REGISTRY Version 2":
+        return None
+    if len(lines) == 1 and not eof:
+        return None
+
+    architecture: str | None = None
+    found_first_key = False
+    for index, line in enumerate(lines[1:], start=1):
+        is_last = index == len(lines) - 1
+        if is_last and not eof:
+            # Do not accept a partial architecture directive, or claim
+            # uniqueness while the preamble may continue beyond the read bound.
+            if line.startswith(b"#arch"):
+                return None
+            break
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        if line.lstrip(b" \t").startswith(b"["):
+            found_first_key = True
+            break
+        if not line.startswith(b"#arch="):
+            continue
+        match = _ARCH_HEADER_LINE.fullmatch(line)
+        if match is None or architecture is not None:
+            # Malformed, duplicate (even identical), or conflicting options
+            # are ambiguous and must never establish an architecture.
+            return None
+        architecture = f"win{match.group(1).decode('ascii')}"
+    if not eof and not found_first_key:
+        return None
+    return architecture
+
+
 def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
-    """Read only a regular system.reg file; FIFO opens are non-blocking."""
+    """Read a bounded header from a regular system.reg; FIFO opens are non-blocking."""
     try:
         info = _stat_at(directory_fd, "system.reg")
     except OSError as exc:
@@ -168,17 +218,33 @@ def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
             or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
         ):
             return None, "system.reg changed identity or type before it could be read"
-        raw = os.read(fd, REG_HEADER_BYTES)
+        # Read at most the configured header plus one sentinel byte. The
+        # sentinel distinguishes a complete final line at byte 4096 from a
+        # truncated line whose uninspected suffix could change its meaning.
+        chunks: list[bytes] = []
+        remaining = REG_HEADER_BYTES + 1
+        reached_eof = False
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                reached_eof = True
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
     except OSError as exc:
         return None, f"{type(exc).__name__}: {exc}"
     finally:
         os.close(fd)
 
-    first_line = raw.decode("utf-8", errors="replace").split("\n", 1)[0]
-    match = _ARCH_LINE.match(first_line.strip())
-    if not match:
+    header = raw[:REG_HEADER_BYTES]
+    architecture = _parse_arch(
+        header,
+        eof=reached_eof and len(raw) <= REG_HEADER_BYTES,
+    )
+    if architecture is None:
         return None, None
-    return f"win{match.group(1)}", None
+    return architecture, None
 
 
 def _probe_nested_directory(
@@ -467,12 +533,12 @@ def discover_prefixes(
 
         try:
             entries_to_scan: list[tuple[str, int, int, int]] = []
-            overflow = False
+            entry_overflow = False
             try:
                 with os.scandir(root_fd) as entries:
                     for entry in entries:
-                        if len(entries_to_scan) == MAX_SCAN_SUBDIRS:
-                            overflow = True
+                        if len(entries_to_scan) == MAX_SCAN_ENTRIES:
+                            entry_overflow = True
                             break
                         # The no-follow stat snapshot is the identity
                         # expectation. readdir's d_ino is intentionally not
@@ -495,7 +561,22 @@ def discover_prefixes(
                 ))
                 return
 
+            # Bounded split scan (F3): the first MAX_SCAN_ENTRIES entries
+            # yielded by readdir are retained, then that bounded sample is
+            # sorted by name before processing. The processing order is stable
+            # within that sample, but if the root exceeds MAX_SCAN_ENTRIES,
+            # sample membership can depend on filesystem readdir order.
+            # PARTIALLY_PROVEN below records that the scan was truncated;
+            # callers must not treat the sample as a complete inventory.
+            processed_subdirs = 0
+            subdir_overflow = False
             for name, expected_dev, expected_ino, entry_mode in sorted(entries_to_scan):
+                if (
+                    stat.S_ISDIR(entry_mode)
+                    and processed_subdirs == MAX_SCAN_SUBDIRS
+                ):
+                    subdir_overflow = True
+                    break
                 if stat.S_ISLNK(entry_mode):
                     evidence.append(Evidence(
                         "prefix_candidate", EvidenceStatus.BLOCKED,
@@ -506,6 +587,7 @@ def discover_prefixes(
                     continue
                 if not stat.S_ISDIR(entry_mode):
                     continue
+                processed_subdirs += 1
                 candidate_fd = None
                 try:
                     candidate_fd = os.open(name, _directory_flags(), dir_fd=root_fd)
@@ -534,17 +616,30 @@ def discover_prefixes(
                 finally:
                     if candidate_fd is not None:
                         os.close(candidate_fd)
-            if overflow:
+            if subdir_overflow or entry_overflow:
+                details = {
+                    "path": str(root),
+                    "scanned": len(entries_to_scan),
+                    "subdirs_scanned": processed_subdirs,
+                    "additional_entries_not_enumerated": True,
+                }
+                if subdir_overflow:
+                    details["limit"] = MAX_SCAN_SUBDIRS
+                    summary = (
+                        "Scan capped at MAX_SCAN_SUBDIRS subdirectories; "
+                        "remaining entries were not enumerated"
+                    )
+                else:
+                    details["limit"] = MAX_SCAN_ENTRIES
+                    summary = (
+                        "Scan capped at MAX_SCAN_ENTRIES entries; "
+                        "remaining entries were not enumerated"
+                    )
                 evidence.append(Evidence(
                     "prefix_discovery", EvidenceStatus.PARTIALLY_PROVEN,
-                    "Scan capped at MAX_SCAN_SUBDIRS entries; remaining entries were not enumerated",
+                    summary,
                     f"bottle_manager.discovery:{origin}",
-                    {
-                        "path": str(root),
-                        "scanned": len(entries_to_scan),
-                        "limit": MAX_SCAN_SUBDIRS,
-                        "additional_entries_not_enumerated": True,
-                    },
+                    details,
                 ))
         finally:
             os.close(root_fd)

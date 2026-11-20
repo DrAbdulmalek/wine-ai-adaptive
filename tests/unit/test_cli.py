@@ -139,7 +139,8 @@ class PrefixesCommandTests(unittest.TestCase):
         prefix = managed / name
         (prefix / "drive_c").mkdir(parents=True)
         (prefix / "system.reg").write_text(
-            f"##arch - {arch}\n", encoding="ascii"
+            f"WINE REGISTRY Version 2\n#arch={arch}\n",
+            encoding="ascii",
         )
         for reg in ("user.reg", "userdef.reg"):
             (prefix / reg).write_text("## WINE registry\n", encoding="ascii")
@@ -178,7 +179,9 @@ class PrefixesCommandTests(unittest.TestCase):
     def test_prefixes_flags_default_prefix_as_protected(self):
         prefix = self.home / ".wine"
         (prefix / "drive_c").mkdir(parents=True)
-        (prefix / "system.reg").write_text("##arch - win64\n", encoding="ascii")
+        (prefix / "system.reg").write_text(
+            "WINE REGISTRY Version 2\n#arch=win64\n", encoding="ascii"
+        )
         for reg in ("user.reg", "userdef.reg"):
             (prefix / reg).write_text("## WINE registry\n", encoding="ascii")
         code, out = self._run(["prefixes", "--json"])
