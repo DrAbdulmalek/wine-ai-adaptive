@@ -14,6 +14,7 @@ from unittest import mock
 
 from wine_ai.bottle_manager.discovery import (
     MAX_SCAN_SUBDIRS,
+    REG_HEADER_BYTES,
     discover_prefixes,
     inspect_prefix,
 )
@@ -391,6 +392,75 @@ class DiscoverPrefixesTests(unittest.TestCase):
         discover_prefixes(home=self.home)
         after = snapshot()
         self.assertEqual(before, after)
+
+
+    def test_registry_header_accepts_crlf_line_endings(self):
+        prefix = make_prefix(self.home, "crlf")
+        (prefix / "system.reg").write_bytes(
+            b"WINE REGISTRY Version 2\\r\\n#arch=win64\\r\\n\\r\\n"
+        )
+
+        info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+        self.assertTrue(any(
+            item.status.value == "PROVEN"
+            and "Architecture win64 from system.reg header" in item.summary
+            for item in evidence
+        ))
+
+    def test_registry_header_parser_handles_short_reads(self):
+        prefix = make_prefix(self.home, "short-reads")
+        real_read = os.read
+        read_sizes = []
+
+        def short_read(fd, size):
+            read_sizes.append(size)
+            return real_read(fd, min(size, 3))
+
+        with mock.patch("wine_ai.bottle_manager.discovery.os.read",
+                        side_effect=short_read):
+            info, _ = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+        self.assertGreater(len(read_sizes), 1)
+
+    def test_registry_header_at_exact_read_limit_is_accepted_at_eof(self):
+        prefix = make_prefix(self.home, "header-at-limit")
+        banner = b"WINE REGISTRY Version 2\\n"
+        header = b"#arch=win64\\n"
+        padding_size = REG_HEADER_BYTES - len(banner) - len(header)
+        padding = b"#" + (b"x" * (padding_size - 2)) + b"\\n"
+        payload = banner + padding + header
+        self.assertEqual(len(payload), REG_HEADER_BYTES)
+        (prefix / "system.reg").write_bytes(payload)
+
+        info, _ = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info["architecture"], "win64")
+
+    def test_registry_header_truncated_at_read_limit_is_not_accepted(self):
+        prefix = make_prefix(self.home, "truncated-header")
+        token = b"#arch=win64"
+        padding_size = REG_HEADER_BYTES - len(token)
+        padding = b"#" + (b"x" * (padding_size - 2)) + b"\\n"
+        payload = padding + token + b"X\\n"
+        self.assertEqual(len(payload[:REG_HEADER_BYTES]), REG_HEADER_BYTES)
+        self.assertGreater(len(payload), REG_HEADER_BYTES)
+        (prefix / "system.reg").write_bytes(payload)
+
+        info, evidence = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+        self.assertTrue(any(
+            item.status.value == "UNPROVEN"
+            and "left unknown" in item.summary
+            for item in evidence
+        ))
 
 
 class InspectPrefixTests(unittest.TestCase):
