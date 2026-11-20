@@ -47,7 +47,7 @@ MARKER_FILES = ("system.reg", "user.reg", "userdef.reg")
 # carry the architecture on its own header line: "#arch=win32" / "#arch=win64".
 # The previous "# arch - win64" text pattern matched no real Wine file, so
 # every genuine prefix kept architecture UNPROVEN.
-_ARCH_HEADER_LINE = re.compile(rb"^#arch=win(32|64)$", re.MULTILINE)
+_ARCH_HEADER_LINE = re.compile(rb"#arch=win(32|64)")
 _MANAGED_ROOT_PARTS = (".local", "share", "wine-ai-adaptive", "prefixes")
 
 
@@ -145,22 +145,29 @@ def _stat_at(directory_fd: int, name: str):
     return os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
 
 
-def _parse_arch(raw: bytes) -> str | None:
-    """Parse the real Wine registry header line ``#arch=win32|win64``.
+def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
+    """Parse a complete Wine registry header line ``#arch=win32|win64``.
 
-    Byte-exact per-line matching (``re.MULTILINE``) keeps the parse
-    independent of decode-replacement artifacts and cannot be satisfied by
-    a look-alike line with trailing text. A header without the line stays
-    unknown: the caller reports UNPROVEN rather than guessing a default.
+    Lines are matched byte-for-byte after removing the CR in CRLF files.
+    An unterminated final line is accepted only when the caller has proved
+    EOF; this prevents a valid-looking prefix at the 4096-byte read boundary
+    from being accepted when trailing bytes were not inspected.
     """
-    match = _ARCH_HEADER_LINE.search(raw)
-    if not match:
-        return None
-    return f"win{match.group(1).decode('ascii')}"
+    lines = raw.split(b"\\n")
+    for index, line in enumerate(lines):
+        is_last = index == len(lines) - 1
+        if is_last and not eof:
+            break
+        if line.endswith(b"\\r"):
+            line = line[:-1]
+        match = _ARCH_HEADER_LINE.fullmatch(line)
+        if match:
+            return f"win{match.group(1).decode('ascii')}"
+    return None
 
 
 def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
-    """Read only a regular system.reg file; FIFO opens are non-blocking."""
+    """Read a bounded header from a regular system.reg; FIFO opens are non-blocking."""
     try:
         info = _stat_at(directory_fd, "system.reg")
     except OSError as exc:
@@ -188,13 +195,30 @@ def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
             or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
         ):
             return None, "system.reg changed identity or type before it could be read"
-        raw = os.read(fd, REG_HEADER_BYTES)
+        # Read at most the configured header plus one sentinel byte. The
+        # sentinel distinguishes a complete final line at byte 4096 from a
+        # truncated line whose uninspected suffix could change its meaning.
+        chunks: list[bytes] = []
+        remaining = REG_HEADER_BYTES + 1
+        reached_eof = False
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                reached_eof = True
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
     except OSError as exc:
         return None, f"{type(exc).__name__}: {exc}"
     finally:
         os.close(fd)
 
-    architecture = _parse_arch(raw)
+    header = raw[:REG_HEADER_BYTES]
+    architecture = _parse_arch(
+        header,
+        eof=reached_eof and len(raw) <= REG_HEADER_BYTES,
+    )
     if architecture is None:
         return None, None
     return architecture, None
@@ -514,12 +538,13 @@ def discover_prefixes(
                 ))
                 return
 
-            # Deterministic bounds (F3): the collected entries are sorted by
-            # name, at most MAX_SCAN_SUBDIRS directories are processed, and
-            # every entry type counts toward MAX_SCAN_ENTRIES. A flood of
-            # regular files no longer hides real prefixes behind the
-            # directory bound, and the processed set stays independent of
-            # readdir order (bounded by the entry cap collected first).
+            # Bounded split scan (F3): the first MAX_SCAN_ENTRIES entries
+            # yielded by readdir are retained, then that bounded sample is
+            # sorted by name before processing. The processing order is stable
+            # within that sample, but if the root exceeds MAX_SCAN_ENTRIES,
+            # sample membership can depend on filesystem readdir order.
+            # PARTIALLY_PROVEN below records that the scan was truncated;
+            # callers must not treat the sample as a complete inventory.
             processed_subdirs = 0
             subdir_overflow = False
             for name, expected_dev, expected_ino, entry_mode in sorted(entries_to_scan):
