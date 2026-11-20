@@ -153,12 +153,12 @@ def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
     EOF; this prevents a valid-looking prefix at the 4096-byte read boundary
     from being accepted when trailing bytes were not inspected.
     """
-    lines = raw.split(b"\\n")
+    lines = raw.split(b"\n")
     for index, line in enumerate(lines):
         is_last = index == len(lines) - 1
         if is_last and not eof:
             break
-        if line.endswith(b"\\r"):
+        if line.endswith(b"\r"):
             line = line[:-1]
         match = _ARCH_HEADER_LINE.fullmatch(line)
         if match:
