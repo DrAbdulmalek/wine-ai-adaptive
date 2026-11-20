@@ -181,6 +181,7 @@ def _parse_arch(raw: bytes, *, eof: bool = True) -> str | None:
         architecture = f"win{match.group(1).decode('ascii')}"
     return architecture
 
+
 def _read_reg_arch(directory_fd: int) -> tuple[str | None, str | None]:
     """Read a bounded header from a regular system.reg; FIFO opens are non-blocking."""
     try:
