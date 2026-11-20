@@ -506,6 +506,24 @@ class DiscoverPrefixesTests(unittest.TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(info["architecture"], "win64")
 
+    def test_architecture_is_unproven_when_preamble_may_continue_past_limit(self):
+        prefix = make_prefix(self.home, "open-preamble")
+        banner = b"WINE REGISTRY Version 2\n"
+        architecture = b"#arch=win64\n"
+        padding_size = REG_HEADER_BYTES - len(banner) - len(architecture)
+        padding = (b";" * (padding_size - 1)) + b"\n"
+        payload = (
+            banner + architecture + padding
+            + b"#arch=win32\n[Software\\Wine]\n"
+        )
+        self.assertGreater(len(payload), REG_HEADER_BYTES)
+        (prefix / "system.reg").write_bytes(payload)
+
+        info, _ = inspect_prefix(prefix, home=self.home)
+
+        self.assertIsNotNone(info)
+        self.assertIsNone(info["architecture"])
+
     def test_registry_header_truncated_at_read_limit_is_not_accepted(self):
         prefix = make_prefix(self.home, "truncated-header")
         banner = b"WINE REGISTRY Version 2\n"
